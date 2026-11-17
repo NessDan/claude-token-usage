@@ -43,7 +43,7 @@ Prompt-less usage gets its own **background** rows. Today that means the compact
    They are a common scale, not a charge.
 
    Live figures (a running message's row, the band's "this message so far", the line under each answer, compaction rows) come from the hook's four counts per request, with one write count and no lifetime split. The main conversation's writes are priced at the session's lifetime; agents' and compaction's at 5 minutes, the lifetime Claude Code gives them even on a subscription. The hook reports the API's top-level usage, which leaves out an advisor run's own tokens and has no pass split, so live figures neither price the advisor's run nor apply the first-pass rule below. The pane's row gets the exact figures when the transcript is read after the turn; the line under the answer is never redrawn.
-3. **Plan-limit points.** The change in each limit window between `turn.start` and `turn.complete`, read with `$.session.usage()`. They're coarse and account-wide, and they exist only while the mod is loaded. They're never derived from tokens.
+3. **Plan-limit points.** The change in each limit window between `turn.start` and `turn.complete`, read with `$.session.usage()`. They're coarse and account-wide, and they exist only while the mod is loaded. They're never derived from tokens. The one estimate that turns dollars into points, the weekly share, is marked ≈ and has its own section below.
    - A window whose reset time moved forward rolled over in between; the change then counts from the reset ("reset, now X%"). A falling percentage is only the fallback for a reading without a reset time, which 2.1.321 never produces.
    - The readings arrive with model responses. When none came in for over 2 minutes before a turn, its change also covers that gap, and the row is labelled with the earlier reading's time.
    - Each turn's change goes to exactly one row: the latest row that started a turn, has no change yet, and began between a minute before the turn's start and 5 s after. Queued messages and background rows never take one.
@@ -101,11 +101,11 @@ Facts from a survey of 2,400 transcript files on this machine (Claude Code 2.1.2
 
 **Live capture:**
 
-- `turn.step` (an async generator, `yield* next(e)` once) gives each request's usage, main and agents.
+- `turn.step` (an async generator, `yield* next(e)` once) gives each request's usage, main and agents. After each one, at most every 5 seconds, the readings are polled for the weekly ledger.
 - `turn.start` and `turn.complete` (main loop) give the plan-limit readings around each turn.
 - `session.compact` gives the summarizer's usage (a background row). The main conversation's compaction (not a subagent's, nor one only prepared in advance) also marks the next message as rebuilding from the summary.
 - `prompt.submit` gives the origin of the prompt that starts the next turn: the person, a task notification, another session.
-- `session.measure` gives the latest limits.
+- `session.measure` gives the latest limits, and a weekly step for the ledger when a window moved.
 
 **Reconcile.** After each turn the transcript is re-read and replaces the live rows it now covers:
 
@@ -133,21 +133,76 @@ A `/clear` or resume changes the transcript path. Everything restarts at once, a
 - the readings;
 - the transcript path;
 - UI toggles;
-- a 30-second tick for the countdown.
+- a 30-second tick for the countdown;
+- the weekly calibration.
 
-Lists are capped.
+Lists are capped. The weekly ledger is the one thing kept outside the session, in `$.store` (below).
 
 **Drawing.**
 
-- *Pane:* quiet labelled sections (this chat, cache, cost per message, messages), one prominent number in each and the detail in muted text, after Refactoring UI's hierarchy, Linear's calm, low-chrome density and Tufte's word-sized graphics. On desktop, small SVGs carry the graphics: a split bar of your messages against Claude's replies, a countdown meter for the cache, and a chart of the last 40 messages; the terminal gets a text meter and a sparkline. Plan limits are left out, since the app already shows them. Messages are newest first, 80 drawn, each as two lines: the prompt and its cost, then its number and time with a dim Details toggle and its weekly share (`weeklyShare`) as prominent as the cost. A third line appears only when a cache lapsed. The rest of a row (the You/Claude split, the full explanation, the measured plan change, the request lines) and the notes on the figures sit behind toggles.
+- *Pane:* quiet labelled sections (this chat, cache, cost per message, messages), one prominent number in each and the detail in muted text, after Refactoring UI's hierarchy, Linear's calm, low-chrome density and Tufte's word-sized graphics. On desktop, small SVGs carry the graphics: a split bar of your messages against Claude's replies, a countdown meter for the cache, and a chart of the last 40 messages; the terminal gets a text meter and a sparkline. Plan limits are left out, since the app already shows them. Messages are newest first, 80 drawn, each as two lines: the prompt and its cost, then its number and time with a dim Details toggle and its weekly share (`weeklyShare`) as prominent as the cost: the estimate (≈) once calibrated, else the measured change ("+1%", or "<1%" when the reading didn't move). The chat's total share sits beside its total. A third line appears only when a cache lapsed. The rest of a row (the You/Claude split, the full explanation, the measured plan change, the request lines) and the notes on the figures sit behind toggles; the notes say what the weekly estimate is based on (or how far its calibration has got) and what makes it run high.
 - *Band above the prompt:* the cache countdown, or what the next message will cost to re-write.
 - *Toast:* when a turn this load saw finish had to re-write the conversation (its first request found the cache fully lapsed, or a mid-turn request did) and those lapses cost $0.25 or more; agents' lapses aren't counted toward it. Never about an older message, on a reload or a resume.
-- *The line under each answer:* each lapse with its own figure: the first request's (worded by why), mid-turn ones, agents'.
+- *The line under each answer:* the weekly share once calibrated, and each lapse with its own figure: the first request's (worded by why), mid-turn ones, agents'.
+
+## The weekly share (`lib/weekly.ts`)
+
+**The ask.** Show what share of the weekly limit each message used ("≈0.12% of weekly"), and make sure five chats running at once don't throw the figure off.
+
+**Why it is estimated.** Claude Code 2.1.321 gives plugins only the `five_hour` and `seven_day` windows, as a percentage "with at most one decimal". On this account they move in whole-point steps, so the change measured around one message reads +0% or +1%.
+
+**The method.** The steps themselves are exact. Between the moment the reading first showed 41% and the moment it first showed 45%, the window moved 4 points, and the meter knows what was spent in between. The rate is points ÷ API-equivalent dollars, and a message's share is its dollars × the rate. Anthropic publishes no formula for plan usage, so this assumes it runs in proportion to API prices, measured on the person's own account.
+
+**Pooled across chats.** The readings are account-wide, so a chat that divided the points by its own spend while four others worked would put every share about five times too high.
+
+- Every chat running the meter keeps a ledger entry in `$.store` under `ledger1:<session id>`: its spend by the minute, and the weekly readings it saw. The calibration reads every chat's entry.
+- **One key per chat**, because of how 2.1.321 keeps the store: one JSON file for the plugin. `get` reads the file afresh, and `set` locks it across processes, re-reads it, replaces one key and rewrites the whole file (checked in the binary). A shared key written by get-modify-set from several chats would lose updates; a key per chat cannot.
+- **Compact strings** (base-36 pairs), because the file is rewritten pretty-printed on every write and all keys together are capped at 4 MiB. Entries are kept 8 days, and any chat deletes one older than that.
+- A chat writes its entry within 30 seconds of a new request or reading, at once when it sees a step, and after each transcript read.
+
+**Spend comes from the transcript.** The hook's live usage leaves out the advisor model's own run, about $2.40 a call at Fable 5.2's rates for a 225k-token conversation, and a denominator without it would put every share too high. So a chat's spend is:
+
+- its transcript's own requests, priced as the rows are (`MeterView.spend`, built before the row cap, so it survives the Node helper's JSON);
+- the live requests the transcript doesn't hold yet, judged request by request: a main-thread request sent after the transcript's newest one, or an agent's that finished after the read;
+- compaction's summary requests, which the transcript never holds.
+
+A forked session's file starts with its original's history, copied under the original's `sessionId` (two such files on this machine, one with 711 copied response lines). Only lines carrying the file's own session id count, or the same requests would be in two chats' ledgers. A chat that has never seen a weekly reading (an API key: its spend isn't the plan's) writes nothing.
+
+**Readings.**
+
+- Every response, an agent's included, carries the readings and updates the session's, and the engine drops one older than the last it applied (checked in the binary). So the readings are polled after each request, at most every 5 seconds, and on a `session.measure` whose `changed` includes `rateLimits`.
+- Never at `turn.start`: that reading is the last response's, possibly hours old.
+- A chat folds its readings into runs: the value, the window's reset time, when the value was first known (the end of the response that first reported it), and the latest time it was known to hold (the start of the last request that reported it). An hour with no reading starts a new run.
+
+**The calibration.**
+
+- Readings are grouped by window (reset times within an hour) and split into spells wherever no chat had a reading for an hour.
+- In each spell, a value counts as an **anchor** when a lower value was known to hold at most 10 minutes before it was first seen. The step happened inside that bracket, and the chats' spend inside it is how far the stretch's end could be off. A lower reading that arrives after a higher one (another chat's stale value) is no evidence.
+- A spell's stretch runs from its first anchor to its last. The rate is all the stretches' points over all their spend, with each minute's dollars counted in proportion to the part of the minute inside.
+- An idle spell boundary leaves out the points crossed while no chat here was working: use elsewhere while this computer was idle (the phone overnight) never enters the rate.
+- Steps from the last 2 minutes wait, so every working chat has written its entry (never more than 30 seconds behind).
+- It looks back 7 days.
+- It shows once the stretches span 3 points and the spend inside the anchors' brackets stays under a quarter of the spend measured. Until then each message shows the measured change, and the pane's notes say how many points the calibration has.
+- A chat works the calibration out again shortly after it loads, before the line under an answer and every 2 minutes (at most once a minute), and just over 2 minutes after it sees a step.
+
+**Considered and not done.**
+
+- *Calibrating on this chat's own spend:* about five times too high with five chats.
+- *Summing spend from every transcript on disk*, which would also see chats not running the meter: the mod reads files up to 4 MiB, this machine's transcripts run to hundreds of megabytes, and a Node pass over all of them for every calibration is too slow. The readings would still need the ledger.
+- *A Fable-specific figure:* Claude Code tracks per-model buckets (`model_scoped` on its `/usage` screen), but 2.1.321 doesn't pass them to plugins.
+
+**What makes it run high.** Use the ledger can't see while chats here are working, which moves the readings without adding to the spend:
+
+- claude.ai in a browser, the phone, or another computer;
+- a chat on this computer that hasn't loaded this version of the meter (after an update, `/reload-plugins` in each open chat);
+- a chat with the meter turned off.
+
+A mix of models or caching unlike the calibration's can shift it either way. The pane's notes and the README say so.
 
 ## Tested
 
-- `test/core.test.ts`: 39 unit tests on synthetic transcripts (`npm test`).
-- `plugins/usage-meter/tests/meter.test.tsx`: 8 tests in the engine's own test kit (`claude plugin test`). They drive live turns and check the pane, the band and the line under each answer, on desktop and terminal, including a turn a background task started, an agent that keeps working after its message was read, and an agent a later message resumes.
+- `test/core.test.ts`: 50 unit tests on synthetic transcripts (`npm test`). The weekly share's include five chats at once against one chat spending the same (the same rate) and against one chat counting its own spend (five times too high), too few points, an idle gap with use elsewhere, a step seen too late to anchor, a weekly reset, a fork's copied history, the advisor's own run, and live requests the transcript doesn't hold yet.
+- `plugins/usage-meter/tests/meter.test.tsx`: 13 tests in the engine's own test kit (`claude plugin test`). They drive live turns and check the pane, the band and the line under each answer, on desktop and terminal, including a turn a background task started, an agent that keeps working after its message was read, and an agent a later message resumes. For the weekly share, the store is seeded with five chats' ledger entries, this one among them. The tests check the estimate beside the row's cost, beside the chat's total and under the answer; what the notes say it's based on; this chat's entry keeping what it stored before the load; the measured change shown while calibrating; a step written at once; and a chat off a subscription writing nothing.
 - `claude plugin validate` and a strict `tsc` against the build's own declarations.
 - Real headless runs of Claude Code 2.1.321 with the mod loaded, checked in the debug log:
   - every hook ran;

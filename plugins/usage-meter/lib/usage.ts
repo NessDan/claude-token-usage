@@ -206,6 +206,11 @@ export type Req = {
   estimated?: boolean
   /** The first main-thread request after a compaction: the context was rebuilt on purpose, so its cache verdict is a reset. */
   afterCompaction?: boolean
+  /**
+   * The session id its transcript line carries. A forked session's file starts
+   * with the original's history copied in, under the original's id.
+   */
+  session?: string
 }
 
 /** Dollars per web search, as the pricing page lists it. */

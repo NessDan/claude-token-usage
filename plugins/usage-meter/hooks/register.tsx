@@ -9,6 +9,11 @@
 // Draws: a pane (one row per message, newest first: your message, Claude's
 // reply, the cache, plan points), a one-line band above the prompt (the cache
 // countdown and what the next message will cost to read), /usage-meter.
+//
+// The weekly share ("≈0.12% of weekly"): every chat running the meter keeps its
+// spend by the minute and the weekly readings it saw in $.store, one key per
+// chat; the weekly window's steps, measured against what all the chats here
+// spent between them, give the rate (lib/weekly.ts).
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -22,13 +27,29 @@ import type {
   MeterReq,
   MeterRow,
   MeterView,
+  WeeklyState,
 } from '../types/index.d.ts'
 import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, YOU_COLOR } from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
 import { agentIdFromPath, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
 import { bar, estimateNext, fmtDuration, fmtPoints, fmtTokens, fmtUsd, limitDeltas, limitLabel, preview, ttlMs } from '../lib/usage.ts'
-import { buildTranscriptView, isCovered, reqOfLastMain, withLive } from '../lib/view.ts'
+import { buildTranscriptView, chatSpend, isCovered, reqOfLastMain, withLive } from '../lib/view.ts'
+import type { ChatLedger, SeenRun, SpendSeries } from '../lib/weekly.ts'
+import {
+  calibrate,
+  decodeEntry,
+  encodeEntry,
+  estimatedShare,
+  fmtShare,
+  KEEP_MS,
+  LEDGER_PREFIX,
+  MIN_POINTS,
+  noteReading,
+  overlaySpend,
+  pruneLedger,
+  SETTLE_MS,
+} from '../lib/weekly.ts'
 
 const PANE = 'usage-meter'
 const TITLE = 'Usage meter'
@@ -52,6 +73,14 @@ const MEASURE = atom({ plugin: 'usage-meter', key: 'measure' } as const, null, {
 const TRANSCRIPT = atom({ plugin: 'usage-meter', key: 'transcript' } as const, null)
 const UI = atom({ plugin: 'usage-meter', key: 'ui' } as const, { expanded: [], bandHidden: false, notesHidden: false }, { shape: 'ui-2' })
 const TICK = atom({ plugin: 'usage-meter', key: 'tick' } as const, 0)
+const WEEKLY = atom({ plugin: 'usage-meter', key: 'weekly' } as const, null, { shape: 'weekly-1' })
+
+/** The weekly ledger: this chat's entry is written within this long of a new request or reading (lib/weekly.ts's SETTLE_MS counts on it). */
+const LEDGER_WRITE_MS = 30_000
+/** The calibration is worked out again at most this often, unless a step was just seen. */
+const CALIBRATE_MS = 60_000
+/** Readings are polled after a request at most this often. */
+const POLL_MS = 5_000
 
 /// Module state: lost on a reload, rebuilt from the transcript.
 /** The transcript's own view, as last read, and the path it was read from. */
@@ -77,6 +106,19 @@ let helperFailed = false
 /** The pane was placed on a surface this load. */
 let panePlaced = false
 
+/// The weekly ledger: this chat's entry in $.store, beside every other chat's.
+/** The weekly readings this chat saw, as runs (its stored ones folded in once per key). */
+let ownSeen: SeenRun[] = []
+/** The key whose stored entry has been folded in, and the spend that entry held. */
+let ownLoadedKey: string | undefined
+let ownStoredSpend: SpendSeries = []
+/** Something new to write; a write is already waiting on its timer. */
+let ledgerDirty = false
+let ledgerTimer = false
+let lastCalibrationAt = -Infinity
+let calibrating = false
+let lastPollAt = -Infinity
+
 // ---------------------------------------------------------------- small helpers
 
 /** A line in the debug log only (claude --debug), never the transcript. */
@@ -97,6 +139,12 @@ function clock(ms: number): string {
 function clockSeconds(ms: number): string {
   const d = new Date(ms)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+}
+
+/** The session id a transcript's file name carries (<id>.jsonl). */
+function sessionOfPath(path: string): string | undefined {
+  const name = path.replace(/\\/g, '/').split('/').pop() ?? ''
+  return /\.jsonl$/i.test(name) ? name.replace(/\.jsonl$/i, '') : undefined
 }
 
 /** Two spellings of one file (slashes, drive-letter case) are the same file. */
@@ -288,9 +336,34 @@ function limitWords(r: MeterRow): string | undefined {
   return `Plan (all your sessions${since}): ${each.join(' · ')}`
 }
 
+/** A message's estimated share of the weekly limit, "≈0.12% of weekly", once the calibration is ready. */
+function shareWords(r: MeterRow, calib: WeeklyState | null): string | undefined {
+  const share = estimatedShare(r.total, calib)
+  return share === undefined ? undefined : `≈${fmtShare(share)} of weekly`
+}
+
+/** A time, with its weekday when it was not today. */
+function dayClock(ms: number, now: number): string {
+  const d = new Date(ms)
+  if (d.toDateString() === new Date(now).toDateString()) return clock(ms)
+  return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${clock(ms)}`
+}
+
+/** The notes on the weekly share: what the estimate is based on, or, until it is ready, what the figure is and how far the calibration has got. */
+function weeklyNote(w: WeeklyState | null, now: number): string {
+  if (w && w.ready) {
+    const chats = `${w.chats} chat${w.chats === 1 ? '' : 's'}`
+    return `The weekly share (≈) is an estimate: the message's dollars times the rate your weekly limit moved at while your chats here spent. 1% of your weekly limit ≈ ${fmtUsd(1 / w.pointsPerUsd)} of use here, from ${w.points} points over ${fmtUsd(w.usd)} spent by ${chats} on this computer since ${dayClock(w.from ?? w.at, now)}.`
+  }
+  const sofar = !w || !w.points ? '' : w.points < w.minPoints ? ` (${w.points} so far)` : ` (${w.points} so far, not yet timed closely enough)`
+  return `The weekly share is the change in Claude Code's own weekly-limit reading while the message ran. It covers your whole account, so other chats running at the same time count too, and the reading moves in whole steps, so a small message shows as less than one. Once the limit has stepped up ${MIN_POINTS} points while chats here were working${sofar}, each message gets an estimate instead, marked ≈.`
+}
+
 /** The one line shown beneath Claude's answer for the message that just finished. */
-function noteLine(r: MeterRow, ttl: Ttl): string {
+function noteLine(r: MeterRow, ttl: Ttl, calib: WeeklyState | null): string {
   const parts = [`Usage: you ${fmtUsd(r.you)} (${youWords(r)})`, `Claude ${r.estimated ? '≈' : ''}${fmtUsd(r.claude)} (${claudeWords(r)})`]
+  const share = shareWords(r, calib)
+  if (share) parts.push(share)
   const plan = limitWords(r)
   if (plan) parts.push(plan)
   // Each lapse with its own figure: the first request's, mid-turn ones, agents'.
@@ -313,11 +386,15 @@ function noteLine(r: MeterRow, ttl: Ttl): string {
 }
 
 /**
- * A row's share of the weekly limit, as Claude Code's own readings around its
- * turn measured it (account-wide). The readings move in whole percents (or
- * tenths), so no change reads as less than one step.
+ * A row's share of the weekly limit, shown beside its cost. Once the
+ * calibration is ready, the estimate: "≈0.12%" (lib/weekly.ts). Until then,
+ * the change Claude Code's own readings measured around its turn
+ * (account-wide); they move in whole percents (or tenths), so no change reads
+ * as less than one step.
  */
-function weeklyShare(r: MeterRow): string | undefined {
+function weeklyShare(r: MeterRow, calib: WeeklyState | null): string | undefined {
+  const est = estimatedShare(r.total, calib)
+  if (est !== undefined) return `≈${fmtShare(est)}`
   const w = r.limits?.find(l => l.label === 'Weekly')
   if (!w || w.didReset) return undefined
   if (w.delta > 0) return fmtPoints(w.delta)
@@ -454,7 +531,7 @@ async function loadTranscript($: EngineInterface, path: string, fallback: Ttl): 
       }
       const parsed = p.result()
       dbg($, `read ${path} in-process (${size} bytes, ${agents.length} agent files): ${parsed.exchanges.length} messages`)
-      return buildTranscriptView(parsed, fallback, now)
+      return buildTranscriptView(parsed, fallback, now, sessionOfPath(path))
     } catch (err) {
       dbg($, `in-process read failed: ${(err as Error).message}`)
     }
@@ -578,6 +655,9 @@ async function refresh($: EngineInterface): Promise<void> {
           base = null
           basePath = undefined
         }
+        // The transcript gives this chat's spend exactly (the advisor's own run
+        // included): share it with the other chats now.
+        if (loaded) await writeLedger($)
       }
       await rebuild($)
       await toastIfCold($)
@@ -646,6 +726,148 @@ async function notePath($: EngineInterface, path: string | undefined, sessionId:
   })
 }
 
+// ---------------------------------------------------------------- the weekly ledger
+
+/** This chat's key in the shared ledger: `ledger1:<session id>`. */
+async function ledgerKey($: EngineInterface): Promise<string | undefined> {
+  let id = (await read($, TRANSCRIPT))?.sessionId
+  if (!id) {
+    try {
+      id = await $.session.id()
+    } catch {
+      // not known yet
+    }
+  }
+  return id ? `${LEDGER_PREFIX}${id}` : undefined
+}
+
+/**
+ * Folds this chat's stored entry in, once per key: after a reload or a resume
+ * it holds the readings seen before. False while the store can't be read:
+ * nothing of this chat's is written then, so what it stored is not replaced.
+ */
+async function loadOwn($: EngineInterface, key: string): Promise<boolean> {
+  if (ownLoadedKey === key) return true
+  let stored: ChatLedger | undefined
+  try {
+    stored = decodeEntry(key, await $.store.get(key))
+  } catch {
+    return false
+  }
+  // Another call may have folded it in while this one read.
+  if (ownLoadedKey !== key) {
+    ownLoadedKey = key
+    ownStoredSpend = stored?.spend ?? []
+    if (stored) ownSeen = [...stored.seen, ...ownSeen].sort((a, b) => a.first - b.first)
+  }
+  return true
+}
+
+/** This chat's ledger as it stands: what its transcript and live requests cost, by the minute, and the readings it saw. */
+async function ownLedger($: EngineInterface, key: string, now: number): Promise<ChatLedger> {
+  const live = await read($, LIVE)
+  const ttl = base?.ttl ?? ttlFallback(await read($, MEASURE))
+  let spend = chatSpend(base, live.exchanges, live.extras ?? [], ttl, now)
+  if (!base) {
+    // No transcript read in this load (yet): keep what was stored for the
+    // minutes before the live requests begin.
+    let first = Infinity
+    for (const x of live.exchanges) for (const r of x.reqs) first = Math.min(first, r.at)
+    for (const r of live.extras ?? []) first = Math.min(first, r.at)
+    spend = overlaySpend(ownStoredSpend, spend, Number.isFinite(first) ? Math.floor(first / 60_000) : Infinity)
+  }
+  return pruneLedger({ id: key, at: now, spend, seen: ownSeen }, now)
+}
+
+/**
+ * Writes this chat's entry now. A chat that has never seen a weekly reading
+ * writes none: off a subscription (an API key) its spend does not count
+ * against the plan, so it must not dilute the other chats' rate.
+ */
+async function writeLedger($: EngineInterface): Promise<void> {
+  try {
+    const key = await ledgerKey($)
+    if (!key || !(await loadOwn($, key))) return
+    ledgerDirty = false
+    if (!ownSeen.length) return
+    const now = await $.clock.now()
+    await $.store.set(key, encodeEntry(await ownLedger($, key, now)))
+  } catch (err) {
+    dbg($, `weekly ledger not written: ${(err as Error).message}`)
+  }
+}
+
+/** This chat's ledger has something new: it is written within LEDGER_WRITE_MS. */
+function ledgerChanged($: EngineInterface): void {
+  ledgerDirty = true
+  if (ledgerTimer) return
+  ledgerTimer = true
+  $.clock.after(LEDGER_WRITE_MS, () => {
+    ledgerTimer = false
+    if (ledgerDirty) void writeLedger($)
+  })
+}
+
+/**
+ * Notes the weekly reading a response brought: the request was sent at
+ * `start` and its response done at `end`, so the value held at some moment
+ * between the two. Only fresh readings come here (never one read at a turn's
+ * start, which may be hours old).
+ */
+async function noteWeekly($: EngineInterface, limits: readonly LimitReading[], start: number, end: number): Promise<void> {
+  const w = limits.find(l => l.kind === 'seven_day')
+  const resets = w?.resetsAt ? Date.parse(w.resetsAt) : NaN
+  if (!w || !Number.isFinite(resets)) return
+  const key = await ledgerKey($)
+  if (key) await loadOwn($, key)
+  const r = noteReading(ownSeen, { pct: w.percentUsed, resets, start, end })
+  ownSeen = r.runs
+  if (!r.changed) {
+    ledgerChanged($)
+    return
+  }
+  // The reading stepped: tell the other chats at once, and work the
+  // calibration out again once the step has settled.
+  await writeLedger($)
+  $.clock.after(SETTLE_MS + 5_000, () => {
+    void recalibrate($, true)
+  })
+}
+
+/** Works the calibration out again from every chat's entry, at most once a minute unless `force`. Entries older than KEEP_MS are deleted. */
+async function recalibrate($: EngineInterface, force = false): Promise<void> {
+  if (calibrating) return
+  calibrating = true
+  try {
+    const now = await $.clock.now()
+    if (!force && now - lastCalibrationAt < CALIBRATE_MS) return
+    lastCalibrationAt = now
+    const key = await ledgerKey($)
+    const ownLoaded = key ? await loadOwn($, key) : false
+    const chats: ChatLedger[] = []
+    for (const k of await $.store.keys()) {
+      if (!k.startsWith(LEDGER_PREFIX) || k === key) continue
+      const entry = decodeEntry(k, await $.store.get(k))
+      if (!entry) continue
+      if (entry.at < now - KEEP_MS) {
+        // A chat gone for over a week: its data is past the horizon.
+        await $.store.delete(k)
+        continue
+      }
+      chats.push(entry)
+    }
+    // Off a subscription this chat's spend is not the plan's.
+    if (key && ownLoaded && ownSeen.length) chats.push(await ownLedger($, key, now))
+    const cal = calibrate(chats, now)
+    dbg($, `weekly calibration: ${cal.points} points over $${cal.usd.toFixed(2)} from ${cal.chats} of ${chats.length} chats${cal.ready ? `, 1% per $${(1 / cal.pointsPerUsd).toFixed(2)}` : ', not ready'}`)
+    await update($, WEEKLY, () => ({ ...cal, minPoints: MIN_POINTS, at: now }))
+  } catch (err) {
+    dbg($, `weekly calibration failed: ${(err as Error).message}`)
+  } finally {
+    calibrating = false
+  }
+}
+
 // ---------------------------------------------------------------- the module
 
 export const register: Register = on => {
@@ -666,6 +888,16 @@ export const register: Register = on => {
     })
     $.clock.after(100, () => {
       void refresh($)
+    })
+    // The weekly share: the other chats' ledgers may already be enough for an estimate.
+    $.clock.after(1_500, () => {
+      void recalibrate($, true)
+    })
+    $.clock.every(120_000, () => {
+      void (async () => {
+        if (ledgerDirty) await writeLedger($)
+        await recalibrate($)
+      })()
     })
     return r
   })
@@ -760,6 +992,17 @@ export const register: Register = on => {
         dbg($, `step ${req.key}${e.agentId ? ` agent ${e.agentId}` : ''}: ${u.model} in ${u.input_tokens} read ${u.cache_read_input_tokens} write ${u.cache_creation_input_tokens} out ${u.output_tokens}`)
         await update($, LIVE, s => addLive(s, req, turn?.id, e.turnId))
         await scheduleRebuild($)
+        // Every response, an agent's too, brings the account's readings: the
+        // weekly one is fresh now. The request's spend goes to the ledger.
+        if (endedAt - lastPollAt >= POLL_MS) {
+          lastPollAt = endedAt
+          try {
+            await noteWeekly($, (await $.session.usage()).rateLimits, startedAt, endedAt)
+          } catch {
+            // no readings off a subscription
+          }
+        }
+        ledgerChanged($)
       }
     } catch {
       // the meter never breaks a step
@@ -799,9 +1042,10 @@ export const register: Register = on => {
       // A line beneath Claude's answer: display only, the transcript is never rewritten.
       const ui = await read($, UI)
       if (!ui.notesHidden && r.text === e.answer) {
+        await recalibrate($)
         const view = await read($, VIEW)
         const row = view?.rows.find(x => x.id === e.turnId)
-        if (view && row && row.mainReqs > 0) return { ...r, text: noteLine(row, view.ttl) }
+        if (view && row && row.mainReqs > 0) return { ...r, text: noteLine(row, view.ttl, await read($, WEEKLY)) }
       }
     } catch {
       // the meter never breaks a turn
@@ -817,6 +1061,8 @@ export const register: Register = on => {
       const m: MeasureState = { rateLimits: readings(e.rateLimits), at }
       if (e.cost) m.costUsd = e.cost.usd
       await update($, MEASURE, () => m)
+      // A window moved (or a reading first arrived): it came with the response just received.
+      if (e.changed.includes('rateLimits')) await noteWeekly($, e.rateLimits, at, at)
     } catch {
       // readings are a nicety
     }
@@ -912,6 +1158,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const view = await read($, VIEW)
     const ui = await read($, UI)
+    const calib = await read($, WEEKLY)
     await read($, TICK)
     const now = await $.clock.now()
     const els = $.ui.resolve(e)
@@ -936,6 +1183,8 @@ export const register: Register = on => {
     const rows = view.rows.slice(-PANE_ROWS).reverse()
     const expanded = new Set(ui.expanded)
     const approx = view.estimatedRequests ? '≈' : ''
+    // The chat's whole spend as a share of the weekly limit, once the calibration is ready.
+    const chatShare = estimatedShare(t.usd, calib)
 
     // A quiet section label, with a note on the right.
     const label = (key: string, title: string, note?: string) => (
@@ -964,12 +1213,22 @@ export const register: Register = on => {
             {t.messages} message{t.messages === 1 ? '' : 's'} · {fmtTokens(t.tokens)} tokens
           </Text>
         </Box>
-        <Box flexDirection="row" alignItems="flex-end" gap="sm">
-          <Text size="title" weight="semibold" tabular>
-            {approx}
-            {fmtUsd(t.usd)}
-          </Text>
-          <Text dimColor>API-equivalent</Text>
+        <Box flexDirection="row" justifyContent="space-between" alignItems="flex-end" gap="md">
+          <Box flexDirection="row" alignItems="flex-end" gap="sm">
+            <Text size="title" weight="semibold" tabular>
+              {approx}
+              {fmtUsd(t.usd)}
+            </Text>
+            <Text dimColor>API-equivalent</Text>
+          </Box>
+          {chatShare !== undefined ? (
+            <Box flexDirection="row" alignItems="flex-end" gap="xs" flexShrink={0}>
+              <Text weight="semibold" tabular>
+                ≈{fmtShare(chatShare)}
+              </Text>
+              <Text dimColor>of weekly</Text>
+            </Box>
+          ) : null}
         </Box>
         {Svg ? <Svg source={splitBarSvg(t.you, t.claude, W, 8)} alt={`Your messages ${fmtUsd(t.you)}, Claude's replies ${fmtUsd(t.claude)}`} height={8} /> : null}
         <Box flexDirection="row" justifyContent="space-between">
@@ -1083,7 +1342,7 @@ export const register: Register = on => {
       const isOpen = expanded.has(row.id)
       const origin = originLabel(row.origin).replace(/: $/, '')
       const meta = [`#${row.n}`, clock(row.at), origin, row.open ? 'running' : row.live ? 'live' : ''].filter(Boolean).join(' · ')
-      const weekly = weeklyShare(row)
+      const weekly = weeklyShare(row, calib)
       const lapse = lapseWords(row)
       const cold = coldWords(row, ttl)
       const plan = limitWords(row)
@@ -1195,7 +1454,13 @@ export const register: Register = on => {
               You: what reading the conversation plus your new message cost. Claude: everything it did to answer, thinking, writing, tools, agents and the advisor.
             </Text>
             <Text size="caption" dimColor>
-              Dollars are API list-price equivalents for comparison; a subscription doesn't charge them. The weekly share is the change in Claude Code's own weekly-limit reading while the message ran; it covers your whole account, so other chats running at the same time count too, and the reading moves in whole steps, so a small message shows as less than one.
+              Dollars are API list-price equivalents for comparison; a subscription doesn't charge them.
+            </Text>
+            <Text size="caption" dimColor>
+              {weeklyNote(calib, now)}
+            </Text>
+            <Text size="caption" dimColor>
+              The estimate runs high while something the meter can't see uses your account: claude.ai, the phone, another computer, or a chat here that hasn't loaded this version of the meter (run /reload-plugins there). Each message's measured change is in its details.
             </Text>
             {view.estimatedRequests ? (
               <Text size="caption" dimColor>

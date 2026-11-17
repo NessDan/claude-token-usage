@@ -116,7 +116,9 @@ Anthropic publishes **no formula** for how tokens count against the Pro, Max or 
 - **Caching on a subscription.** Writing about Claude Code's caching on a subscription: "You don't see these prices directly, but the same requests are what draw down your limits" ([claude.com](https://claude.com/resources/articles/maximizing-the-value-of-your-claude-code-sessions)).
 - **Cached re-reads still count.** Re-reading history from the cache still draws usage, at the cached rate ([costs](https://code.claude.com/docs/en/costs#why-usage-climbs-in-a-long-session)).
 
-That's why the meter shows **tokens** as the API reported them (except requests whose transcript kept only part of the output count, mostly agent requests from Claude Code 2.1.219 to 2.1.293: those are estimated from the text written, likely low, and marked ≈), **API-equivalent dollars** priced from those tokens at list rates as a common scale, and the **plan-limit change** Claude Code itself measured around each message. It never turns tokens or dollars into plan points, or plan points into either.
+That's why the meter shows **tokens** as the API reported them (except requests whose transcript kept only part of the output count, mostly agent requests from Claude Code 2.1.219 to 2.1.293: those are estimated from the text written, likely low, and marked ≈), **API-equivalent dollars** priced from those tokens at list rates as a common scale, and the **plan-limit change** Claude Code itself measured around each message. The plan-limit change is never derived from tokens.
+
+The one figure that turns dollars into plan points is the **estimated weekly share** ("≈0.12% weekly"), and it's marked ≈. With no published formula, it doesn't use one. It measures your own: how far your weekly reading stepped up against what your chats on this computer spent in the meantime. That assumes your plan counts usage in proportion to API prices, and it runs high when something it can't see (claude.ai, the phone, another computer) uses your account at the same time. The [README](../README.md#reading-the-numbers) explains it.
 
 ## 7. What already existed (November 2026)
 

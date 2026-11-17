@@ -46,6 +46,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 
   Transcripts over 4 MB are summarized by `scripts/summarize.ts` through Node.
 - **Dollars are Anthropic API list prices.** A subscription doesn't charge them; they are for comparison.
-- **The weekly share is Claude Code's own reading.** Each message shows how far your weekly limit moved while it ran. It's account-wide, so your other sessions running at the same time count too, and the reading moves in coarse steps, so a small message shows "<1%". When no reading had come in for a few minutes before a message, its change also covers that time, and its details say since when.
+- **The weekly share starts as Claude Code's own reading.** Each message shows how far your weekly limit moved while it ran. It's account-wide, so your other sessions running at the same time count too, and the reading moves in coarse steps, so a small message shows "<1%". When no reading had come in for a few minutes before a message, its change also covers that time, and its details say since when.
+- **Then it becomes an estimate (≈):** the message's dollars times a rate calibrated from your weekly readings. Every chat running the meter shares what it spent and the readings it saw (in the plugin's own store), so several chats at once are counted together. It takes over once the weekly reading has stepped up 3 points while chats here were working, and the measured change moves to the message's details. Use the meter can't see at the same time (claude.ai, the phone, another computer, a chat that hasn't reloaded the meter) makes it run high.
 
 The repository README and `docs/` explain the details.

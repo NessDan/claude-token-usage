@@ -19,8 +19,9 @@ if (!path) {
 }
 
 try {
-  const { parsed } = loadSession(path)
-  process.stdout.write(JSON.stringify(buildTranscriptView(parsed, ttl, Date.now())))
+  const { file, parsed } = loadSession(path)
+  // The file's own session id: a fork's copied history stays out of its spend.
+  process.stdout.write(JSON.stringify(buildTranscriptView(parsed, ttl, Date.now(), file.id)))
 } catch (err) {
   process.stderr.write(`summarize: ${(err as Error).message}\n`)
   process.exit(1)

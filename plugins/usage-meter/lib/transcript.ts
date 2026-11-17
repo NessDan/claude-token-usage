@@ -181,6 +181,7 @@ export function requestsOfLine(o: Line, kind: RequestKind, agentId: string | und
   let model = str(msg.model)
   if (!usage || !model || model === '<synthetic>') return none
   const at = timeOf(o) ?? 0
+  const session = str(o.sessionId)
   const key = str(msg.id) ?? str(o.requestId) ?? str(o.uuid) ?? `${model}@${at}`
   const fast = usage.speed === 'fast'
   const geoRaw = str(usage.inference_geo)
@@ -228,7 +229,7 @@ export function requestsOfLine(o: Line, kind: RequestKind, agentId: string | und
       model = fallback.model ?? model
       passes.forEach((p, i) => {
         if (totalTokens(p.tokens) === 0) return
-        extras.push({ key: `${key}#declined${i}`, at, model: p.model ?? model!, tokens: p.tokens, kind: 'side', agentId, geo })
+        extras.push({ key: `${key}#declined${i}`, at, model: p.model ?? model!, tokens: p.tokens, kind: 'side', agentId, geo, session })
       })
     } else if (passes.length) {
       let executor: Tokens = { ...ZERO_TOKENS }
@@ -250,10 +251,11 @@ export function requestsOfLine(o: Line, kind: RequestKind, agentId: string | und
     let i = 0
     for (const x of others.values()) {
       if (totalTokens(x.tokens) === 0) continue
-      extras.push({ key: `${key}#iter${i++}`, at, model: x.model, tokens: x.tokens, kind: x.kind, agentId, geo })
+      extras.push({ key: `${key}#iter${i++}`, at, model: x.model, tokens: x.tokens, kind: x.kind, agentId, geo, session })
     }
   }
   const main: Req = { key, at, model, tokens, kind, agentId }
+  if (session) main.session = session
   if (fast) main.fast = true
   if (geo) main.geo = geo
   if (webSearches) main.webSearches = webSearches

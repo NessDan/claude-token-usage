@@ -17,6 +17,8 @@ import { priceFor } from './pricing.ts'
 import type { ParsedTranscript } from './transcript.ts'
 import type { Exchange, ExchangeReport, Req, SessionReport, Ttl } from './usage.ts'
 import { analyzeSession, cacheWrites, promptTokens, requestCost, totalTokens, ZERO_TOKENS } from './usage.ts'
+import type { SpendSeries } from './weekly.ts'
+import { addSpend, decodeSpend, encodeSpend, KEEP_MS, spendByMinute } from './weekly.ts'
 
 /** Messages kept in the view (the newest). */
 export const MAX_ROWS = 300
@@ -208,8 +210,30 @@ export function reqOfLastMain(m: MeterLastMain | undefined, ttl: Ttl): Req | und
   }
 }
 
-/** The view of a transcript alone. `ttlFallback` is used when the transcript does not say which cache lifetime the session runs on. */
-export function buildTranscriptView(parsed: ParsedTranscript, ttlFallback: Ttl, now: number): MeterView {
+/**
+ * What the session's own requests cost, by the minute, over the ledger's last
+ * KEEP_MS: for the weekly-share ledger. Requests from lines another session
+ * wrote (a fork's copied history) are that session's and stay out, so no
+ * request is counted in two chats' ledgers.
+ */
+function ownSpend(parsed: ParsedTranscript, ownSession: string | undefined, now: number): SpendSeries {
+  const items: { at: number; usd: number }[] = []
+  const add = (r: Req) => {
+    if (ownSession && r.session && r.session !== ownSession) return
+    items.push({ at: r.at, usd: requestCost(r, priceFor) })
+  }
+  for (const r of parsed.preamble) add(r)
+  for (const ex of parsed.exchanges) for (const r of ex.reqs) add(r)
+  return spendByMinute(items, now - KEEP_MS)
+}
+
+/**
+ * The view of a transcript alone. `ttlFallback` is used when the transcript
+ * does not say which cache lifetime the session runs on. `ownSession` is the
+ * session id the file belongs to (its name): with it, the view's `spend` leaves
+ * out history a fork copied from another session.
+ */
+export function buildTranscriptView(parsed: ParsedTranscript, ttlFallback: Ttl, now: number, ownSession?: string): MeterView {
   const report = analyzeSession(parsed.exchanges, { price: priceFor, ttl: parsed.ttl ?? ttlFallback }, parsed.preamble)
   const ttl = report.mainTtl ?? parsed.ttl ?? ttlFallback
   const reps = report.reports
@@ -232,6 +256,7 @@ export function buildTranscriptView(parsed: ParsedTranscript, ttlFallback: Ttl, 
   if (parsed.compactedAt !== undefined) view.compactedAt = parsed.compactedAt
   const estimated = report.reports.reduce((s, r) => s + r.estimatedRequests, 0)
   if (estimated) view.estimatedRequests = estimated
+  view.spend = encodeSpend(ownSpend(parsed, ownSession, now))
   return view
 }
 
@@ -304,6 +329,45 @@ function backgroundRow(r: LiveReq, ttl: Ttl): MeterRow {
 }
 
 /**
+ * The live exchanges the base view's transcript does not hold yet, each with
+ * the requests it does not hold: an agent's request that had finished before
+ * the transcript was read is in it already.
+ */
+export function freshLive(base: MeterView | null, live: readonly LiveExchange[]): LiveExchange[] {
+  const mark = base?.lastMain?.at ?? -Infinity
+  const readAt = base?.source === 'transcript' ? base.builtAt : -Infinity
+  return live
+    .filter(l => !isCovered(l, mark))
+    .map(l => ({ ...l, reqs: l.reqs.filter(r => r.kind === 'main' || r.end === undefined || r.end > readAt) }))
+    .filter(l => l.reqs.length > 0)
+}
+
+/**
+ * This chat's spend by the minute, for the weekly-share ledger: the
+ * transcript's own requests (the base view's `spend`), each live request it
+ * does not hold yet, and compaction's summary requests, which it never holds.
+ *
+ * Judged request by request, unlike the rows: a main-thread request sent after
+ * the transcript's newest one, or an agent's that finished after the read, is
+ * not in it. A turn the transcript was read in the middle of (the pane opened
+ * mid-turn) keeps adding its later requests here.
+ */
+export function chatSpend(base: MeterView | null, live: readonly LiveExchange[], extras: readonly LiveReq[], ttl: Ttl, now: number): SpendSeries {
+  const mark = base?.lastMain?.at ?? -Infinity
+  const readAt = base?.source === 'transcript' ? base.builtAt : -Infinity
+  const items: { at: number; usd: number }[] = []
+  const add = (r: LiveReq) => items.push({ at: r.at, usd: requestCost(reqOfLive(r, ttl), priceFor, ttl) })
+  for (const l of live) {
+    for (const r of l.reqs) {
+      const held = r.kind === 'main' ? r.at < mark : r.end !== undefined && r.end <= readAt
+      if (!held) add(r)
+    }
+  }
+  for (const x of extras) add(x)
+  return addSpend(decodeSpend(base?.spend), spendByMinute(items, now - KEEP_MS))
+}
+
+/**
  * Adds the live exchanges that start after the base view's last message and
  * the background requests the transcript never records, and attaches the
  * plan-limit changes recorded live to the messages they belong to.
@@ -318,13 +382,7 @@ export function withLive(
   liveCompactedAt?: number,
 ): MeterView {
   const ttl = base?.ttl ?? ttlFallback
-  const mark = base?.lastMain?.at ?? -Infinity
-  // Agent requests that had finished before the transcript was read are in it already.
-  const readAt = base?.source === 'transcript' ? base.builtAt : -Infinity
-  const fresh = live
-    .filter(l => !isCovered(l, mark))
-    .map(l => ({ ...l, reqs: l.reqs.filter(r => r.kind === 'main' || r.end === undefined || r.end > readAt) }))
-    .filter(l => l.reqs.length > 0)
+  const fresh = freshLive(base, live)
   let rows = base ? [...base.rows] : []
   let totals = base ? base.totals : emptyTotals()
   let lastMain = base?.lastMain

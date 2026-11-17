@@ -117,6 +117,34 @@ export type MeterView = {
   compactedAt?: number
   /** Requests in the view whose output was estimated (see MeterRow.estimated). */
   estimatedRequests?: number
+  /**
+   * The session's own spend by the minute, encoded (lib/weekly.ts), for the
+   * weekly-share ledger. Only a transcript's view has it; the drawn view does not.
+   */
+  spend?: string
+}
+
+/** The weekly-share calibration as last worked out from every chat's ledger (lib/weekly.ts). */
+export type WeeklyState = {
+  /** Enough data for an estimate. */
+  ready: boolean
+  /** Weekly percentage points per API-equivalent dollar spent on this computer. */
+  pointsPerUsd: number
+  /** Weekly points measured, and what the chats here spent over the same stretches. */
+  points: number
+  usd: number
+  /** Spend inside the anchors' brackets: how far the stretches' ends could be off, $. */
+  edgeUsd: number
+  /** Chats whose spend fell in those stretches. */
+  chats: number
+  stretches: number
+  /** The first and last anchor used. */
+  from?: number
+  to?: number
+  /** Points needed before the estimate is shown. */
+  minPoints: number
+  /** When it was worked out. */
+  at: number
 }
 
 /** A request seen live (turn.step), before the transcript has it. */
@@ -199,6 +227,7 @@ declare module 'claude-code' {
       transcript: TranscriptRef | null
       ui: Shaped<MeterUi>
       tick: number
+      weekly: Shaped<WeeklyState | null>
     }
   }
 }

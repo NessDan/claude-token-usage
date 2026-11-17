@@ -15,10 +15,25 @@ import {
   fmtTokens,
   fmtUsd,
   limitDeltas,
+  requestCost,
   tokensFromApiUsage,
   ZERO_TOKENS,
 } from '../plugins/usage-meter/lib/usage.ts'
-import { buildTranscriptView, reqOfLive, withLive } from '../plugins/usage-meter/lib/view.ts'
+import { buildTranscriptView, chatSpend, reqOfLive, withLive } from '../plugins/usage-meter/lib/view.ts'
+import type { ChatLedger, SeenRun, SpendSeries } from '../plugins/usage-meter/lib/weekly.ts'
+import {
+  calibrate,
+  decodeEntry,
+  decodeSeen,
+  decodeSpend,
+  encodeEntry,
+  encodeSeen,
+  encodeSpend,
+  estimatedShare,
+  fmtShare,
+  noteReading,
+  spendBetween,
+} from '../plugins/usage-meter/lib/weekly.ts'
 
 // ---------------------------------------------------------------- builders
 
@@ -646,5 +661,202 @@ describe('the HTML report', () => {
     const plainHtml = htmlReport({ file, parsed: plain, report: analyzeSession(plain.exchanges, { price: priceFor, ttl: '1h' }, plain.preamble), ttl: '1h', generatedAt: T0 + 2 * MIN })
     assert.ok(!plainHtml.includes('compacted after the last request'))
     assert.ok(!plainHtml.includes('class="num strong">≈'))
+  })
+})
+
+// ---------------------------------------------------------------- the weekly share
+
+describe('the weekly share estimate', () => {
+  const RESET = Date.UTC(2026, 10, 20, 12, 0, 0)
+  const S = T0
+  const sum = (s: SpendSeries) => s.reduce((a, [, usd]) => a + usd, 0)
+  const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) <= eps
+
+  /** $`perMin` every minute from `from` to `to`. */
+  const steady = (from: number, to: number, perMin: number): SpendSeries => {
+    const out: SpendSeries = []
+    for (let m = Math.floor(from / MIN); m < Math.floor(to / MIN); m++) out.push([m, perMin])
+    return out
+  }
+
+  /**
+   * The weekly reading polled every 30 s from `from` to `to`, by `chats` chats
+   * in turn, each after a request sent 5 s before: each chat's runs.
+   */
+  const poll = (chats: number, from: number, to: number, pctAt: (t: number) => number, resets = RESET): SeenRun[][] => {
+    const runs: SeenRun[][] = Array.from({ length: chats }, () => [])
+    let k = 0
+    for (let t = from + 15_000; t < to; t += 30_000, k++) {
+      const i = k % chats
+      runs[i] = noteReading(runs[i]!, { pct: pctAt(t - 5_000), resets, start: t - 5_000, end: t }).runs
+    }
+    return runs
+  }
+
+  /** The weekly limit steps up a point for every $10 spent here: from 40% at S, at $1 a minute. */
+  const pctAt = (t: number) => 40 + Math.floor((t - S) / (10 * MIN))
+
+  test('five chats at once give the rate one chat spending the same would; counting one chat alone would be five times too high', () => {
+    const end = S + 65 * MIN
+    const now = S + 2 * HOUR
+    // Five chats, $0.20 a minute each: $1 a minute in all. The readings are account-wide.
+    const five: ChatLedger[] = poll(5, S, end, pctAt).map((seen, i) => ({ id: `chat${i}`, at: end, spend: steady(S, end, 0.2), seen }))
+    const pooled = calibrate(five, now)
+    // 41% to 46%, each step first seen 15 s after it happened: 50 minutes, $50.
+    assert.equal(pooled.ready, true)
+    assert.equal(pooled.points, 5)
+    assert.ok(near(pooled.usd, 50))
+    assert.ok(near(pooled.pointsPerUsd, 0.1))
+    assert.equal(pooled.chats, 5)
+    assert.equal(pooled.from, S + 10 * MIN + 15_000)
+    assert.equal(pooled.to, S + 60 * MIN + 15_000)
+    // One chat spending $1 a minute alone gets the same rate.
+    const solo = calibrate([{ id: 'solo', at: end, spend: steady(S, end, 1), seen: poll(1, S, end, pctAt)[0]! }], now)
+    assert.ok(near(solo.pointsPerUsd, pooled.pointsPerUsd))
+    // A chat that divided the account's points by its own spend alone.
+    const ownOnly = calibrate([{ ...five[0]!, seen: five.flatMap(c => c.seen) }], now)
+    assert.ok(near(ownOnly.pointsPerUsd / pooled.pointsPerUsd, 5))
+    // A $2 message: 0.2% of the weekly limit, not 1%.
+    assert.equal(fmtShare(estimatedShare(2, pooled)!), '0.20%')
+    assert.equal(fmtShare(estimatedShare(2, ownOnly)!), '1.0%')
+  })
+
+  test('no estimate until the limit has stepped up a few points while chats here watched', () => {
+    const end = S + 25 * MIN
+    const chats = poll(2, S, end, pctAt).map((seen, i) => ({ id: `c${i}`, at: end, spend: steady(S, end, 0.5), seen }))
+    const cal = calibrate(chats, end + HOUR)
+    assert.equal(cal.points, 1)
+    assert.equal(cal.ready, false)
+    assert.equal(estimatedShare(5, cal), undefined)
+    assert.equal(calibrate([], end).ready, false)
+  })
+
+  test('usage elsewhere while every chat here was idle stays out of the rate', () => {
+    // 40% to 44% over 45 minutes here; three idle hours, in which the phone used
+    // 3 points; then 47% to 51% over 45 minutes here.
+    const lunch = S + 45 * MIN
+    const back = S + 3 * HOUR + 45 * MIN
+    const pct = (t: number) => (t < lunch ? pctAt(t) : 47 + Math.floor((t - back) / (10 * MIN)))
+    const morning = poll(2, S, lunch, pct)
+    const afternoon = poll(2, back, back + 45 * MIN, pct)
+    const spend = [...steady(S, lunch, 0.5), ...steady(back, back + 45 * MIN, 0.5)]
+    const chats = [0, 1].map(i => ({ id: `c${i}`, at: back + 45 * MIN, spend, seen: [...morning[i]!, ...afternoon[i]!] }))
+    const cal = calibrate(chats, back + 2 * HOUR)
+    // 41-44% and 48-51%: 6 points over $60. Across the gap it would be 10 points.
+    assert.equal(cal.stretches, 2)
+    assert.equal(cal.points, 6)
+    assert.ok(near(cal.pointsPerUsd, 0.1))
+  })
+
+  test('a step first seen long after the reading below it is not an anchor', () => {
+    // 40% until 5 minutes in; no reading here for 20 minutes; then 42%, stepping up every 10 minutes.
+    const early = poll(1, S, S + 5 * MIN, () => 40)[0]!
+    const later = poll(1, S + 25 * MIN, S + 55 * MIN, t => 42 + Math.floor((t - (S + 20 * MIN)) / (10 * MIN)))[0]!
+    const spend = [...steady(S, S + 5 * MIN, 1), ...steady(S + 25 * MIN, S + 55 * MIN, 1)]
+    const cal = calibrate([{ id: 'c', at: S + 55 * MIN, spend, seen: [...early, ...later] }], S + 2 * HOUR)
+    // 40% to 42% happened somewhere in the 20 minutes: the stretch starts at 43%.
+    assert.equal(cal.from, S + 30 * MIN + 15_000)
+    assert.equal(cal.points, 2)
+    assert.ok(near(cal.pointsPerUsd, 0.1))
+  })
+
+  test('a window that reset is measured on its own', () => {
+    const reset = S + 45 * MIN
+    const before = poll(2, S, reset, t => 90 + Math.floor((t - S) / (10 * MIN)), reset)
+    const after = poll(2, reset, reset + 45 * MIN, t => Math.floor((t - reset) / (10 * MIN)), reset + 7 * 24 * HOUR)
+    const spend = steady(S, reset + 45 * MIN, 0.5)
+    const chats = [0, 1].map(i => ({ id: `c${i}`, at: reset + 45 * MIN, spend, seen: [...before[i]!, ...after[i]!] }))
+    const cal = calibrate(chats, reset + 2 * HOUR)
+    // 91-94% before the reset, 1-4% after: 6 points over $60.
+    assert.equal(cal.stretches, 2)
+    assert.equal(cal.points, 6)
+    assert.ok(near(cal.pointsPerUsd, 0.1))
+  })
+
+  test('spend between two moments counts the part of each minute inside', () => {
+    const m = Math.floor(T0 / MIN)
+    const s: SpendSeries = [[m, 6], [m + 1, 3]]
+    assert.ok(near(spendBetween(s, m * MIN + 20_000, m * MIN + 50_000), 3))
+    assert.ok(near(spendBetween(s, m * MIN + 30_000, (m + 1) * MIN + 30_000), 4.5))
+    assert.equal(spendBetween(s, (m + 2) * MIN, (m + 3) * MIN), 0)
+    assert.equal(spendBetween(s, m * MIN + 50_000, m * MIN + 20_000), 0)
+  })
+
+  test('readings fold into runs; a new value, a new window or an idle hour starts another', () => {
+    let r = noteReading([], { pct: 40, resets: RESET, start: T0 - 5_000, end: T0 })
+    assert.equal(r.changed, true)
+    r = noteReading(r.runs, { pct: 40, resets: RESET, start: T0 + MIN, end: T0 + MIN + 5_000 })
+    assert.equal(r.changed, false)
+    assert.deepEqual(r.runs, [{ first: T0, last: T0 + MIN, pct: 40, resets: RESET }])
+    r = noteReading(r.runs, { pct: 41, resets: RESET, start: T0 + 2 * MIN, end: T0 + 2 * MIN + 5_000 })
+    assert.equal(r.changed, true)
+    assert.equal(r.runs.length, 2)
+    // Two idle hours: the same value starts another run, with no change.
+    r = noteReading(r.runs, { pct: 41, resets: RESET, start: T0 + 3 * HOUR, end: T0 + 3 * HOUR + 1_000 })
+    assert.equal(r.changed, false)
+    assert.equal(r.runs.length, 3)
+    // The window reset.
+    r = noteReading(r.runs, { pct: 41, resets: RESET + 7 * 24 * HOUR, start: T0 + 3 * HOUR + MIN, end: T0 + 3 * HOUR + MIN + 1_000 })
+    assert.equal(r.changed, true)
+  })
+
+  test('a ledger entry is kept as compact strings, and anything else is skipped', () => {
+    const spend: SpendSeries = [[29_400_000, 1.234567], [29_400_001, 0.000004]]
+    const seen: SeenRun[] = [{ first: T0, last: T0 + MIN, pct: 65.4, resets: RESET }]
+    assert.deepEqual(decodeSpend(encodeSpend(spend)), spend)
+    assert.deepEqual(decodeSeen(encodeSeen(seen)), seen)
+    const entry = encodeEntry({ at: T0, spend, seen })
+    assert.equal(typeof entry.spend, 'string')
+    assert.deepEqual(decodeEntry('k', JSON.parse(JSON.stringify(entry))), { id: 'k', at: T0, spend, seen })
+    assert.equal(decodeEntry('k', { v: 2, at: T0 }), undefined)
+    assert.equal(decodeEntry('k', 'junk'), undefined)
+    assert.deepEqual(decodeSpend('zz,1:,:5,!!'), [])
+  })
+
+  test("a transcript's spend leaves out a fork's copied history and counts the advisor's own run", () => {
+    const as = (line: string, session: string) => JSON.stringify({ ...JSON.parse(line), sessionId: session })
+    const iterations = [
+      { type: 'message', input_tokens: 2, output_tokens: 494, cache_read_input_tokens: 236_726, cache_creation_input_tokens: 1_936, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_936 } },
+      { type: 'advisor_message', model: 'claude-fable-5-2', input_tokens: 225_620, output_tokens: 15_937, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      { type: 'message', input_tokens: 2, output_tokens: 1_122, cache_read_input_tokens: 238_662, cache_creation_input_tokens: 1_866, cache_creation: { ephemeral_5m_input_tokens: 1_866, ephemeral_1h_input_tokens: 0 } },
+    ]
+    const raw = JSON.parse(reply(T0 + HOUR + 1000, 'adv', { in: 4, out: 1_616, read: 475_388, w1h: 1_936, iterations }))
+    raw.message.usage.cache_creation_input_tokens = 3_802
+    const t = parseTranscript(lines(
+      as(prompt(T0, 'asked before the fork'), 'original'),
+      as(reply(T0 + 1000, 'c1', { read: 50_000, w1h: 2_000, out: 500 }), 'original'),
+      as(prompt(T0 + HOUR, 'asked in the fork'), 'fork'),
+      as(JSON.stringify(raw), 'fork'),
+    ))
+    const own = t.exchanges.flatMap(e => e.reqs).filter(r => r.session === 'fork')
+    assert.deepEqual(own.map(r => r.kind).sort(), ['advisor', 'main'])
+    const spend = sum(decodeSpend(buildTranscriptView(t, '1h', T0 + 2 * HOUR, 'fork').spend))
+    assert.ok(near(spend, own.reduce((s, r) => s + requestCost(r, priceFor), 0), 1e-5))
+    // Without the file's own id, the copied history would count again.
+    assert.ok(sum(decodeSpend(buildTranscriptView(t, '1h', T0 + 2 * HOUR).spend)) > spend + 0.01)
+  })
+
+  test("a chat's spend adds the live requests its transcript does not hold yet, and compaction's", () => {
+    const t = parseTranscript(lines(prompt(T0, 'first'), reply(T0 + 1000, 'a', { read: 200_000, w1h: 2_000, out: 1_500 })))
+    const base = buildTranscriptView(t, '1h', T0 + 2_000)
+    const opus = { model: 'claude-opus-5-5', input: 2 }
+    // The request the transcript already holds (sent before its newest one), and one sent after.
+    const held = { ...opus, key: 't1#0', at: T0 + 500, end: T0 + 1_500, output: 1_500, read: 200_000, write: 2_000, kind: 'main' as const }
+    const fresh = { ...opus, key: 't2#0', at: T0 + 5 * MIN, end: T0 + 5 * MIN + 2_000, output: 300, read: 203_000, write: 600, kind: 'main' as const }
+    const compact = { ...opus, key: 'c', at: T0 + 6 * MIN, end: T0 + 6 * MIN, input: 0, output: 4_000, read: 203_000, write: 0, kind: 'compact' as const }
+    const live = [
+      { id: 't1', at: T0, prompt: 'first', origin: 'human', open: false, reqs: [held] },
+      { id: 't2', at: T0 + 5 * MIN, prompt: 'second', origin: 'human', open: true, reqs: [fresh] },
+    ]
+    const priced = (r: typeof fresh | typeof compact) => requestCost(reqOfLive(r, '1h'), priceFor, '1h')
+    const s = chatSpend(base, live, [compact], '1h', T0 + 7 * MIN)
+    assert.ok(near(sum(s), sum(decodeSpend(base.spend)) + priced(fresh) + priced(compact), 1e-5))
+  })
+
+  test('shares read naturally', () => {
+    assert.equal(fmtShare(0.004), '<0.01%')
+    assert.equal(fmtShare(0.123), '0.12%')
+    assert.equal(fmtShare(1.44), '1.4%')
+    assert.equal(fmtShare(12.4), '12%')
   })
 })

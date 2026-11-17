@@ -1,4 +1,8 @@
+import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+
+import type { SeenRun, SpendSeries } from '../lib/weekly.ts'
+import { decodeEntry, encodeEntry, noteReading } from '../lib/weekly.ts'
 
 const PANE = {
   plugin: 'usage-meter',
@@ -37,7 +41,7 @@ const COLD = { input_tokens: 2, output_tokens: 800, cache_read_input_tokens: 30_
 type Usage = typeof WARM
 
 /** Stands in for the engine beneath the plugin: every event and call the meter makes is answered here. */
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], usages: Usage[], rateLimits: { kind: string; percentUsed: number }[][], toasts?: string[]) {
+function engine(on: On, usages: Usage[], rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[][], toasts?: string[]) {
   let step = 0
   let reading = 0
   on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
@@ -309,6 +313,160 @@ test('hiding the band says how to bring it back, and /usage-meter show does', as
   ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /Cache warm/ })).toBeDefined()
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------- the weekly share
+
+const NOW = Date.UTC(2026, 10, 16, 20, 0, 0)
+const MIN = 60_000
+const RESETS = '2026-11-20T12:00:00.000Z'
+/** This chat reads the weekly window at 45%. */
+const AT_45 = [{ kind: 'seven_day', percentUsed: 45, resetsAt: RESETS }]
+/** A message that wrote half a million tokens to the cache: $2.70 at Opus 5.5's 5-minute rate. */
+const BIG = { input_tokens: 2, output_tokens: 10_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 500_000, model: 'claude-opus-5-5' }
+
+/** Answers $.store from memory, as the one file every chat's meter shares. */
+function sharedStore(on: On, seed: Record<string, unknown> = {}): Map<string, unknown> {
+  const data = new Map<string, unknown>(Object.entries(seed))
+  on('store.get', (_: unknown, e: { key: string }) => ({ value: data.get(e.key) }))
+  on('store.set', (_: unknown, e: { key: string; value: unknown }) => {
+    data.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', (_: unknown, e: { key: string }) => {
+    data.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...data.keys()] }))
+  return data
+}
+
+const OTHERS = ['chat-1', 'chat-2', 'chat-3', 'chat-4']
+
+/**
+ * Chats' ledger entries, as their meters left them: from 70 minutes ago they
+ * spent $1 a minute between them while the weekly window stepped up a point
+ * every 10 minutes from 40%, for `steps` steps. They took turns seeing the
+ * readings (one every 30 s among them).
+ */
+function ledgers(steps: number, ids: readonly string[]): Record<string, unknown> {
+  const from = NOW - 70 * MIN
+  const until = from + (steps * 10 + 5) * MIN
+  const resets = Date.parse(RESETS)
+  const seen: SeenRun[][] = ids.map(() => [])
+  let k = 0
+  for (let t = from + 15_000; t < until; t += 30_000, k++) {
+    const pct = 40 + Math.floor((t - 5_000 - from) / (10 * MIN))
+    seen[k % ids.length] = noteReading(seen[k % ids.length]!, { pct, resets, start: t - 5_000, end: t }).runs
+  }
+  const spend: SpendSeries = []
+  for (let m = from / MIN; m < until / MIN; m++) spend.push([m, 1 / ids.length])
+  return Object.fromEntries(ids.map((id, i) => [`ledger1:${id}`, encodeEntry({ at: until, spend, seen: seen[i]! })]))
+}
+
+/** The calls a chat with a session id and no transcript on disk makes. */
+function chatAt(on: On, sessionId: string) {
+  on('session.id', () => ({ value: sessionId }))
+  on('env.get', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+}
+
+test('the weekly share shows on the pane and under the answer, from what all five chats here spent', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  engine(on, [BIG], [AT_45])
+  chatAt(on, 'sess-own')
+  // This chat and four others, $0.20 a minute each: 41% to 45% took 40 minutes and $40 in all.
+  const store = sharedStore(on, ledgers(5, ['sess-own', ...OTHERS]))
+
+  await $.turn.start({ text: 'Rewrite the parser', turnId: 't1' })
+  await runStep($ as never, 't1', 0)
+  const done = (await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer', usage: BIG })) as { text: string }
+  // $2.70 at 0.1 points a dollar. Dividing by this chat's own $8 would make it 1.4%.
+  expect(done.text).toMatch(/· ≈0\.27% of weekly · Plan \(all your sessions[^)]*\): Weekly \+0%/)
+
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    // Beside the message's cost, and beside the chat's total (this message is all of it).
+    expect(await ui.find({ type: 'Text', text: /^≈0\.27%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^weekly$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^of weekly$/ })).toBeDefined()
+    await ui.unmount()
+  }
+  // What the estimate is based on, and what makes it run high, are in the notes.
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'usage-meter-about' })
+  await ui.unmount()
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /1% of your weekly limit ≈ \$10\.0 of use here, from 4 points over \$40\.0 spent by 5 chats on this computer/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /claude\.ai, the phone, another computer/ })).toBeDefined()
+  await ui.unmount()
+
+  // Within 30 s this chat's entry is written again: what it had stored (55
+  // minutes at $0.20, before this load) and the new message.
+  await clock.advance(31_000)
+  const own = decodeEntry('ledger1:sess-own', store.get('ledger1:sess-own'))
+  const spent = (own?.spend ?? []).reduce((s, [, usd]) => s + usd, 0)
+  expect(Math.abs(spent - (11 + 2.700008)) < 1e-5).toBe(true)
+})
+
+test('until the weekly window has stepped up a few points, a row shows the measured change and the notes say why', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  engine(on, [BIG], [AT_45])
+  chatAt(on, 'sess-own')
+  // 41% to 43%: two points.
+  sharedStore(on, ledgers(3, OTHERS))
+
+  await $.turn.start({ text: 'Rewrite the parser', turnId: 't1' })
+  await runStep($ as never, 't1', 0)
+  const done = (await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer', usage: BIG })) as { text: string }
+  expect(/of weekly/.test(done.text)).toBe(false)
+
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // The reading didn't move while the message ran: under one step, and no estimate.
+  expect(await ui.find({ type: 'Text', text: /^<1%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^≈/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^of weekly$/ })).toBeUndefined()
+  await ui.press({ key: 'usage-meter-about' })
+  await ui.unmount()
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /stepped up 3 points while chats here were working \(2 so far\)/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a chat adds its spend and the readings it saw to the shared ledger', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  // The window steps from 45% to 46% between this chat's two requests.
+  engine(on, [WARM, WARM], [AT_45, AT_45, [{ ...AT_45[0]!, percentUsed: 46 }]])
+  chatAt(on, 'sess-own')
+  const store = sharedStore(on)
+
+  await $.turn.start({ text: 'hello', turnId: 't1' })
+  await runStep($ as never, 't1', 0)
+  await clock.advance(10_000)
+  await runStep($ as never, 't1', 1)
+  await $.turn.complete({ answer: 'hi', durationMs: 10_000, isAborted: false, turnId: 't1', reason: 'answer', usage: WARM })
+
+  // A step is written at once, for the other chats to see.
+  const own = decodeEntry('ledger1:sess-own', store.get('ledger1:sess-own'))
+  expect(own?.seen.map(r => r.pct)).toEqual([45, 46])
+  expect(own?.seen[1]?.first).toBe(NOW + 10_000)
+  // Both requests' dollars, by the minute they were sent in: $0.08 each.
+  const spent = (own?.spend ?? []).reduce((s, [, usd]) => s + usd, 0)
+  expect(Math.abs(spent - 2 * 0.080008) < 1e-5).toBe(true)
+})
+
+test('a chat off a subscription adds nothing: its spend does not count against the plan', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  engine(on, [BIG], [[]])
+  chatAt(on, 'sess-api-key')
+  const store = sharedStore(on, ledgers(5, OTHERS))
+
+  await $.turn.start({ text: 'hello', turnId: 't1' })
+  await runStep($ as never, 't1', 0)
+  await $.turn.complete({ answer: 'hi', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer', usage: BIG })
+  await clock.advance(60_000)
+  expect(store.has('ledger1:sess-api-key')).toBe(false)
+  expect([...store.keys()].length).toBe(4)
 })
 
 test('an empty session draws a waiting note', async ($, on) => {

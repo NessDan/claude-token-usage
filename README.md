@@ -2,7 +2,7 @@
 
 See how much usage **every message** uses in Claude Code: your message, and Claude's reply. It also shows the prompt cache, so you can see why coming back to an old conversation can eat a chunk of your limits, before you send.
 
-Claude Code's own `/usage` shows session totals, and the desktop app shows context and plan-limit rings. Neither breaks usage down by message. This does: each message's row shows what it cost in API-equivalent dollars and how far it moved your weekly limit, flags a lapsed cache, and opens to the tokens behind it.
+Claude Code's own `/usage` shows session totals, and the desktop app shows context and plan-limit rings. Neither breaks usage down by message. This does: each message's row shows what it cost in API-equivalent dollars and its share of your weekly limit, flags a lapsed cache, and opens to the tokens behind it.
 
 Two pieces:
 
@@ -35,18 +35,18 @@ Built and tested on Claude Code 2.1.321. The one-line install needs 2.1.275 or l
 
 **The pane** opens beside the chat (type `/usage-meter`). From the top:
 
-- **This chat**: the total, split into your messages and Claude's replies, and what lapsed caches cost.
+- **This chat**: the total, split into your messages and Claude's replies, what lapsed caches cost, and the chat's share of your weekly limit once the meter can estimate it.
 - **Cache**: how long the conversation stays cached, and what your next message costs to re-read it, or, once it has expired, to write it all again.
 - **Cost per message**: the last 40 messages, with ▲ where a cache had lapsed.
 - **Messages**, newest first:
 
 ```
 ok now build it                                       $5.29
-#12 · 8:41 PM   Details                         +1% weekly
+#12 · 8:41 PM   Details                      ≈0.64% weekly
 ▲ Cache had lapsed, after 2h 13m away: +$1.84
 ```
 
-Each message shows what it cost and how far it moved your weekly limit, side by side. A third line appears only when a cache had lapsed. **Details** opens the rest: what your message cost against Claude's reply, why the cache lapsed and how much it wrote again, and each request. A row that a background task or another session started is labelled with what started it. "About these numbers" at the bottom explains the figures.
+Each message shows what it cost and its share of your weekly limit, side by side. Once the meter has calibrated it, the share is an estimate marked ≈ (see [Reading the numbers](#reading-the-numbers)). Until then it's how far Claude Code's own weekly reading moved while the message ran: "+1%", or "<1%" when the reading didn't move. A third line appears only when a cache had lapsed. **Details** opens the rest: what your message cost against Claude's reply, why the cache lapsed and how much it wrote again, the measured plan change, and each request. A row that a background task or another session started is labelled with what started it. "About these numbers" at the bottom explains the figures.
 
 **The band above the prompt** depends on what's happening:
 
@@ -57,7 +57,7 @@ Each message shows what it cost and how far it moved your weekly limit, side by 
 **A line under each reply**, display only (Claude never sees it):
 
 ```
-Usage: you $0.31 (read 236k from cache) · Claude $1.10 (14 requests · 18k written) · Plan (all your sessions): Weekly +1%
+Usage: you $0.31 (read 236k from cache) · Claude $1.10 (14 requests · 18k written) · ≈0.17% of weekly · Plan (all your sessions): Weekly +1%
 ```
 
 **A toast** when a turn had to re-write the conversation because its cache had lapsed, and that cost $0.25 or more.
@@ -86,8 +86,13 @@ So the same message can cost **20× to 80× more** than it would have an hour ea
 
 - **You** is what your message cost before Claude did anything: reading the whole conversation plus your new text. That's cheap when the cache is warm, and expensive when it has lapsed.
 - **Claude** is everything Claude did to answer: thinking and writing, each tool round trip (every one re-sends the conversation), subagents and workflow agents, and the advisor.
-- **Dollars** are Anthropic's API list prices applied to the token counts the API reported. A subscription doesn't charge them; they're the best common scale for comparing messages, because Anthropic doesn't publish how tokens map to plan limits. A figure marked ≈ includes output that had to be estimated.
-- **The weekly share** ("+1% weekly") is how far Claude Code's own reading of your weekly limit moved while the message ran. It's account-wide, so anything else using your account at the time counts too, and it's coarse: the reading often moves in whole-percent steps, so a short message shows "<1%". It's only recorded while the mod is loaded.
+- **Dollars** are Anthropic's API list prices applied to the token counts the API reported. A subscription doesn't charge them; they're the best common scale for comparing messages, because Anthropic doesn't publish how tokens map to plan limits. A dollar figure marked ≈ includes output that had to be estimated.
+- **The weekly share** ("+1% weekly"), until the estimate below is ready, is how far Claude Code's own reading of your weekly limit moved while the message ran. It's account-wide, so anything else using your account at the time counts too, and it's coarse: the reading often moves in whole-percent steps, so a short message shows "<1%". It's only recorded while the mod is loaded. Once the estimate takes its place, this measured change stays in the message's **Details**.
+- **The estimated weekly share** ("≈0.17% weekly") is the message's dollars times a rate the meter calibrates from your own weekly readings. Each time the weekly reading steps up, the meter notes when. Between two steps the limit moved by exactly their difference, and the meter knows what was spent in between. "About these numbers" in the pane says what the rate is based on, for example "1% of your weekly limit ≈ $8.30 of use here, from 9 points over $75.0 spent by 5 chats on this computer". The chat's total share sits beside its total.
+  - **Several chats at once don't throw it off.** The readings are account-wide, so every chat running the meter shares the dollars it spent, by the minute, and the readings it saw. The rate divides the points by what all of them spent. A chat dividing by its own spend alone, with four others working, would put every share about five times too high.
+  - **It waits for data.** Until the weekly reading has stepped up 3 points while chats here were working, with the steps timed closely, a message shows the measured change instead. A stretch never spans a weekly reset or an hour in which no chat here was working, so use elsewhere while this computer was idle stays out.
+  - **What makes it run high:** use the meter can't see while chats here are working. That's claude.ai in a browser, the phone, another computer, or a chat on this computer that hasn't loaded this version of the meter. That use moves the weekly reading without adding to the dollars. After updating the meter, run `/reload-plugins` in every open chat.
+  - It assumes your plan counts usage in proportion to API prices, which Anthropic doesn't publish. A mix of models or caching unlike the calibration's can shift it. It covers the overall weekly limit, not the separate Fable one.
 - **Cache states** for each message, as the report's Cache column names them (the pane says the same in words, under **Details**):
 
   | State | Meaning |
@@ -126,7 +131,8 @@ npm run stats
 
 - **Compaction's summary request isn't written to the transcript.** The mod records it live and shows it as its own row; the command-line report can't see it.
 - **Older agent transcripts** (Claude Code 2.1.219 to 2.1.293) recorded only part of each agent request's output. Those outputs are estimated from the text the agent wrote and marked ≈. Thinking isn't in the file, so the estimate runs low.
-- **Per-model weekly limits** (a separate Fable weekly bucket, say) show in Claude Code's `/usage`, but Claude Code 2.1.321 doesn't pass them to plugins, so the meter shows only the 5-hour and overall weekly windows.
+- **Per-model weekly limits** (a separate Fable weekly bucket, say) show in Claude Code's `/usage`, but Claude Code 2.1.321 doesn't pass them to plugins. So the meter shows only the 5-hour and overall weekly windows, and estimates shares of the overall weekly one.
+- **The weekly share is an estimate.** It runs high while something the meter can't see uses your account at the same time as the chats here (see [Reading the numbers](#reading-the-numbers)). It's also only as good as its assumption that your plan counts usage in proportion to API prices.
 - **Prices are list prices as of November 2026** ([plugins/usage-meter/lib/pricing.ts](plugins/usage-meter/lib/pricing.ts)). A model missing from the table is priced as Opus 5.5, and its name says so wherever it's shown.
 - **Very large sessions need Node.** The mod reads transcripts over 4 MB through Node.
 
