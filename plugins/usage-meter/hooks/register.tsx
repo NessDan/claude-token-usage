@@ -1149,7 +1149,9 @@ export const register: Register = on => {
             </Text>
             {stateChip(row)}
           </Box>
-          {Svg ? <Svg source={splitBarSvg(row.you, row.claude, W, 6, row.total / maxRow)} alt={`You ${fmtUsd(row.you)}, Claude ${fmtUsd(row.claude)}`} height={6} /> : null}
+          {Svg ? (
+            <Svg source={splitBarSvg(row.you, row.claude, W, 6, row.total / maxRow, true)} alt={`You ${fmtUsd(row.you)}, Claude ${fmtUsd(row.claude)}, against the costliest message shown`} height={6} />
+          ) : null}
           <Box flexDirection="row" gap="sm">
             <Text color={YOU_COLOR}>■</Text>
             <Text tabular>You {fmtUsd(row.you)}</Text>
@@ -1266,7 +1268,8 @@ export const register: Register = on => {
     let line: string
     let warn = false
     if (e.props.isWorking && last && last.open) {
-      line = `● This message so far: you ${fmtUsd(last.you)} · Claude ${fmtUsd(last.claude)} · ${last.mainReqs + last.agentReqs} requests`
+      const n = last.mainReqs + last.agentReqs
+      line = `● This message so far: you ${fmtUsd(last.you)} · Claude ${fmtUsd(last.claude)} · ${n} request${n === 1 ? '' : 's'}`
     } else if (est.state === 'cold') {
       warn = true
       line = `▲ Cache expired ${fmtDuration(est.idleMs - ttlMs(ttl))} ago: your next message re-writes ${fmtTokens(est.contextTokens)} tokens ≈ ${fmtUsd(est.coldUsd)} (warm: ${fmtUsd(est.warmUsd)})`

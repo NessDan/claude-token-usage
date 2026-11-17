@@ -139,7 +139,7 @@ Lists are capped.
 
 **Drawing.**
 
-- *Pane:* newest messages first, 80 drawn, with a mini chart (Svg) on desktop and a sparkline on the terminal.
+- *Pane:* quiet labelled sections (this chat, cache, plan limits, cost per message, messages), one prominent number in each and the detail in muted text, after Refactoring UI's hierarchy, Linear's calm, low-chrome density and Tufte's word-sized graphics. On desktop, small SVGs carry the graphics: a split bar of your messages against Claude's replies, a countdown meter for the cache, a meter per plan limit that turns amber at 80%, a chart of the last 40 messages, and on each row a bar scaled to the costliest message shown. The terminal gets text meters and a sparkline. Messages are newest first, 80 drawn; each row's requests and the notes on the figures sit behind toggles.
 - *Band above the prompt:* the cache countdown, or what the next message will cost to re-write.
 - *Toast:* when a turn this load saw finish had to re-write the conversation (its first request found the cache fully lapsed, or a mid-turn request did) and those lapses cost $0.25 or more; agents' lapses aren't counted toward it. Never about an older message, on a reload or a resume.
 - *The line under each answer:* each lapse with its own figure: the first request's (worded by why), mid-turn ones, agents'.

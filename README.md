@@ -9,6 +9,8 @@ Two pieces:
 - **A mod for Claude Code** (desktop app and terminal): a pane beside the chat with one row per message, a one-line band above the prompt, a usage line under each reply, and a `/usage-meter` command.
 - **A command-line report** over the conversations already on your computer, as a terminal table or an HTML page.
 
+<p align="center"><img src="docs/images/usage-pane.png" width="400" alt="The usage meter's pane in the Claude desktop app: this chat's total split into your messages and Claude's replies, what lapsed caches cost, the cache countdown, the weekly plan limit with its reset time, and a chart of each message's cost"></p>
+
 ## Install
 
 At the prompt of a Claude Code terminal session:
@@ -31,19 +33,26 @@ Built and tested on Claude Code 2.1.321. The one-line install needs 2.1.275 or l
 
 ## What it shows
 
-**The pane** opens beside the chat (type `/usage-meter`). It lists your messages newest first:
+**The pane** opens beside the chat (type `/usage-meter`). From the top:
+
+- **This chat**: the total, split into your messages and Claude's replies, and what lapsed caches cost.
+- **Cache**: how long the conversation stays cached, and what your next message costs to re-read it, or, once it has expired, to write it all again.
+- **Plan limits**: each limit Claude Code reports for your account, with a meter that turns amber at 80% and when it resets.
+- **Cost per message**: the last 40 messages, with ▲ where a cache had lapsed.
+- **Messages**, newest first:
 
 ```
-#12 · 8:41 PM                                        $5.29
-ok now build it
+ok now build it                                       $5.29
+#12 · 8:41 PM                                        ▲ cold
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ■ You $1.89     cache had lapsed: re-wrote 236k
 ▲ You were away 2h 13m, past the 1-hour cache: your message re-wrote 236k tokens, +$1.84 over a warm cache
 ■ Claude $3.40  14 requests · 31 in 2 agents · 18k written
 Plan (all your sessions): Weekly +1%
-[Show 16 request lines]
+Show 16 request lines
 ```
 
-At the top: the session total, your messages against Claude's replies, your plan limits, a chart of the last 40 messages, and the cache state. A row that a background task or another session started is labelled with what started it. A lapse in the middle of a turn says why: a wait past the cache's lifetime, a model change, or a cache miss a few minutes in.
+The bar under each message is blue for your message and orange for Claude's reply, its length scaled to the costliest message shown. A row that a background task or another session started is labelled with what started it. A lapse in the middle of a turn says why: a wait past the cache's lifetime, a model change, or a cache miss a few minutes in. "About these numbers" at the bottom explains the figures.
 
 **The band above the prompt** depends on what's happening:
 
