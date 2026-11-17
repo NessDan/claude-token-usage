@@ -101,6 +101,35 @@ test('a message shows on the pane with what it used, on desktop and terminal', a
   }
 })
 
+test("a bar in the chart offers a button that scrolls the pane to its message", async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 10, 16, 20, 0, 0) })
+  const toasts: string[] = []
+  engine(on, [WARM], [[]], toasts)
+  on('ui.log', () => ({ value: undefined }))
+  for (const id of ['t1', 't2']) {
+    await $.turn.start({ text: `message ${id}`, turnId: id })
+    await runStep($ as never, id, 0)
+    await $.turn.complete({ answer: 'ok', durationMs: 1_000, isAborted: false, turnId: id, reason: 'answer', usage: WARM })
+    await clock.advance(60_000)
+  }
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Each column is a hover target holding a button with its message's number and cost.
+  expect(await ui.find({ key: 'bar-t2' })).toBeDefined()
+  const chip = await ui.find({ key: 'jump-t1' })
+  expect(String(chip?.props.label)).toMatch(/^#1 · \$[\d.]+ ↓$/)
+  await ui.press({ key: 'jump-t1' })
+  // The test kit has nothing that moves a pane, so the scroll the press asks
+  // for is refused, and the meter says so rather than doing nothing.
+  expect(toasts.some(t => /^Couldn't scroll to message #1: .*ui\.scroll/.test(t))).toBe(true)
+  await ui.unmount()
+
+  // The terminal draws a sparkline: no columns to press.
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await term.find({ key: 'jump-t1' })).toBeUndefined()
+  await term.unmount()
+})
+
 test('the band counts down the cache, then warns once it has lapsed', async ($, on) => {
   const clock = mock.clock(on, { now: Date.UTC(2026, 10, 16, 20, 0, 0) })
   engine(on, [WARM], [[{ kind: 'seven_day', percentUsed: 65 }]])

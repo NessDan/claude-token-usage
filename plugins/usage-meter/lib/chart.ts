@@ -119,44 +119,88 @@ export function isColdRow(r: MeterRow): boolean {
   return r.cache === 'cold' || r.midTurn.length > 0
 }
 
-export function miniChartSvg(rows: readonly MeterRow[], width = 360, height = 120): string {
-  const list = rows.slice(-40)
-  const n = list.length
+/** The chart's frame: margins, the scale's top, and where a value sits. */
+function chartFrame(list: readonly MeterRow[], width: number, height: number, bottom: number) {
   const left = 34
   const right = 4
   const top = 10
-  const bottom = 16
   const plotW = width - left - right
   const plotH = height - top - bottom
   const max = niceTop(Math.max(...list.map(r => r.total), 0))
-  const y = (v: number) => top + plotH - (v / max) * plotH
-  const band = n ? plotW / n : plotW
-  const barW = Math.max(2, Math.min(14, band * 0.62))
+  const band = list.length ? plotW / list.length : plotW
+  return { left, right, top, plotH, max, band, barW: Math.max(2, Math.min(14, band * 0.62)), y: (v: number) => top + plotH - (v / max) * plotH }
+}
+
+/** One message's stacked column, centered on `cx`: your message at the bottom, Claude's reply on top, ▲ over a lapsed cache. */
+function columnParts(r: MeterRow, cx: number, f: ReturnType<typeof chartFrame>): string[] {
+  const parts: string[] = []
+  const x = cx - f.barW / 2
+  const yYou = f.y(r.you)
+  const hYou = f.top + f.plotH - yYou
+  const yTot = f.y(r.total)
+  const gap = hYou > 0.5 && r.claude > 0 ? 1.5 : 0
+  const hClaude = Math.max(0, yYou - yTot - gap)
+  if (hYou > 0.4) {
+    parts.push(
+      hClaude > 0.4
+        ? `<rect x="${x.toFixed(2)}" y="${yYou.toFixed(2)}" width="${f.barW.toFixed(2)}" height="${hYou.toFixed(2)}" fill="${YOU_COLOR}"/>`
+        : `<path d="${roundedTop(x, yYou, f.barW, hYou, 3)}" fill="${YOU_COLOR}"/>`,
+    )
+  }
+  if (hClaude > 0.4) parts.push(`<path d="${roundedTop(x, yTot, f.barW, hClaude, 3)}" fill="${CLAUDE_COLOR}"/>`)
+  if (isColdRow(r)) parts.push(`<text x="${cx.toFixed(1)}" y="${Math.max(8, yTot - 3).toFixed(1)}" text-anchor="middle" font-size="8" fill="${WARN_COLOR}">▲</text>`)
+  return parts
+}
+
+const FONT = 'font-family="system-ui, -apple-system, Segoe UI, sans-serif"'
+
+/** One message's slot of the desktop chart, as `chartSlots` lays it out. */
+export type ChartSlot = { row: MeterRow; svg: string; width: number }
+
+/**
+ * The chart for the desktop pane, cut into one Svg per message so each column
+ * can be its own hover target: `axis` holds the scale's labels, then each slot
+ * its column with its stretch of the top line and the baseline. Laid side by
+ * side they draw what `miniChartSvg` draws, without its message numbers.
+ */
+export function chartSlots(rows: readonly MeterRow[], width = 360, height = 92): { axis: string; axisWidth: number; height: number; slots: ChartSlot[] } {
+  const list = rows.slice(-40)
+  const f = chartFrame(list, width, height, 4)
+  const yMax = f.y(f.max).toFixed(1)
+  const yBase = (f.top + f.plotH).toFixed(1)
+  const axis =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${f.left}" height="${height}" viewBox="0 0 ${f.left} ${height}" ${FONT}>` +
+    `<text x="${f.left - 5}" y="${(f.y(f.max) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">${esc(fmtUsd(f.max))}</text>` +
+    `<text x="${f.left - 5}" y="${(f.y(0) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">$0</text></svg>`
+  const slots = list.map((r, i) => {
+    const w = f.band
+    // The dashes carry on from the slot before (a 5 px pattern).
+    const phase = ((w * i) % 5).toFixed(2)
+    const body = [
+      `<line x1="0" x2="${px(w)}" y1="${yMax}" y2="${yMax}" stroke="${GRID}" stroke-width="1" stroke-dasharray="2 3" stroke-dashoffset="${phase}"/>`,
+      ...columnParts(r, w / 2, f),
+      `<line x1="0" x2="${px(w)}" y1="${yBase}" y2="${yBase}" stroke="${MUTED}" stroke-opacity="0.5" stroke-width="1"/>`,
+    ]
+    return { row: r, svg: svgDoc(w, height, body.join('')), width: w }
+  })
+  return { axis, axisWidth: f.left, height, slots }
+}
+
+export function miniChartSvg(rows: readonly MeterRow[], width = 360, height = 120): string {
+  const list = rows.slice(-40)
+  const n = list.length
+  const f = chartFrame(list, width, height, 16)
+  const { left, right, top, plotH, max, band, y } = f
   const parts: string[] = []
   // One faint line at the top value; the baseline is drawn after the bars.
   parts.push(`<line x1="${left}" x2="${width - right}" y1="${y(max).toFixed(1)}" y2="${y(max).toFixed(1)}" stroke="${GRID}" stroke-width="1" stroke-dasharray="2 3"/>`)
   parts.push(`<text x="${left - 5}" y="${(y(max) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">${esc(fmtUsd(max))}</text>`)
   parts.push(`<text x="${left - 5}" y="${(y(0) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">$0</text>`)
   list.forEach((r, i) => {
-    const cx = left + band * i + band / 2
-    const x = cx - barW / 2
-    const yYou = y(r.you)
-    const hYou = top + plotH - yYou
-    const yTot = y(r.total)
-    const gap = hYou > 0.5 && r.claude > 0 ? 1.5 : 0
-    const hClaude = Math.max(0, yYou - yTot - gap)
     const tip = `#${r.n}: you ${fmtUsd(r.you)}, Claude ${r.estimated ? '≈' : ''}${fmtUsd(r.claude)}${isColdRow(r) ? ' - cache had lapsed' : ''}\n${r.prompt.slice(0, 80)}`
     parts.push(`<g><title>${esc(tip)}</title>`)
     parts.push(`<rect x="${(left + band * i).toFixed(2)}" y="${top}" width="${band.toFixed(2)}" height="${plotH}" fill="transparent"/>`)
-    if (hYou > 0.4) {
-      parts.push(
-        hClaude > 0.4
-          ? `<rect x="${x.toFixed(2)}" y="${yYou.toFixed(2)}" width="${barW.toFixed(2)}" height="${hYou.toFixed(2)}" fill="${YOU_COLOR}"/>`
-          : `<path d="${roundedTop(x, yYou, barW, hYou, 3)}" fill="${YOU_COLOR}"/>`,
-      )
-    }
-    if (hClaude > 0.4) parts.push(`<path d="${roundedTop(x, yTot, barW, hClaude, 3)}" fill="${CLAUDE_COLOR}"/>`)
-    if (isColdRow(r)) parts.push(`<text x="${cx.toFixed(1)}" y="${Math.max(8, yTot - 3).toFixed(1)}" text-anchor="middle" font-size="8" fill="${WARN_COLOR}">▲</text>`)
+    parts.push(...columnParts(r, left + band * i + band / 2, f))
     parts.push('</g>')
   })
   parts.push(`<line x1="${left}" x2="${width - right}" y1="${top + plotH}" y2="${top + plotH}" stroke="${MUTED}" stroke-opacity="0.5" stroke-width="1"/>`)

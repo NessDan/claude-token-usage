@@ -29,7 +29,7 @@ import type {
   MeterView,
   WeeklyState,
 } from '../types/index.d.ts'
-import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, weekMeterSvg, YOU_COLOR } from '../lib/chart.ts'
+import { chartSlots, CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, weekMeterSvg, YOU_COLOR } from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
 import { agentIdFromPath, appEventOf, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
@@ -1413,10 +1413,49 @@ export const register: Register = on => {
 
     // ------------------------------------------------ cost per message
     const shown = Math.min(40, view.rows.length)
-    const chart = Svg ? (
+    // Brings a message's row to the top of the pane. A row's Box is the target;
+    // its Details button stands in should a Box key not be one.
+    const jump = async (row: MeterRow): Promise<void> => {
+      let deny: string | undefined
+      try {
+        let r = await $.ui.scroll({ to: { key: row.id }, in: PANE, block: 'start' })
+        if (r.deny && row.origin !== 'background') r = await $.ui.scroll({ to: { key: `toggle-${row.id}` }, in: PANE, block: 'center' })
+        deny = r.deny
+      } catch (err) {
+        deny = (err as Error).message
+      }
+      // Said out loud, so a jump that does nothing can be told from a press that never arrived.
+      if (deny) {
+        dbg($, `jump to #${row.n}: ${deny}`)
+        $.ui.toast(`Couldn't scroll to message #${row.n}: ${deny}`, { timeoutMs: 6_000 })
+      }
+    }
+    let plot
+    if (Svg && e.surface === 'desktop') {
+      // One Svg per message, each in a slot of its own: hovering a column lights
+      // it and shows a button with its number and cost that scrolls to it.
+      const parts = chartSlots(view.rows, W, 92)
+      const half = parts.slots.length / 2
+      plot = (
+        <Box flexDirection="row" alignItems="flex-start">
+          <Svg source={parts.axis} alt="Scale of the chart" width={parts.axisWidth} height={parts.height} />
+          {parts.slots.map((s, i) => (
+            <Box key={`bar-${s.row.id}`} hover={{ backgroundColor: 'rgba(137,135,129,0.14)' }}>
+              <Svg source={s.svg} alt={`#${s.row.n}: ${fmtUsd(s.row.total)}`} width={s.width} height={parts.height} />
+              <Box position="absolute" top={0} {...(i < half ? { left: 0 } : { right: 0 })} display="none" hover={{ display: 'flex' }}>
+                <Button key={`jump-${s.row.id}`} label={`#${s.row.n} · ${s.row.estimated ? '≈' : ''}${fmtUsd(s.row.total)} ↓`} onPress={() => void jump(s.row)} />
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      )
+    } else if (Svg) {
+      plot = <Svg source={miniChartSvg(view.rows, W, 104)} alt={`Cost of the last ${shown} messages: your message and Claude's reply, stacked`} height={104} isInteractive />
+    }
+    const chart = plot ? (
       <Box key="chart" flexDirection="column" gap="xs">
         {label('chart-label', 'Cost per message', `last ${shown}`)}
-        <Svg source={miniChartSvg(view.rows, W, 104)} alt={`Cost of the last ${shown} messages: your message and Claude's reply, stacked`} height={104} isInteractive />
+        {plot}
         <Box flexDirection="row" gap="sm">
           <Text size="caption" color={YOU_COLOR}>
             ■
