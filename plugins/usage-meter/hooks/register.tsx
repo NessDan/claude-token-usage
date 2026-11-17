@@ -23,7 +23,7 @@ import type {
   MeterRow,
   MeterView,
 } from '../types/index.d.ts'
-import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, WARN_COLOR, YOU_COLOR } from '../lib/chart.ts'
+import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, YOU_COLOR } from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
 import { agentIdFromPath, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
@@ -310,6 +310,36 @@ function noteLine(r: MeterRow, ttl: Ttl): string {
   if (mid > 0.005) parts.push(`▲ mid-turn: +${fmtUsd(mid)}`)
   if (r.agentCold.penalty > 0.005) parts.push(`△ agents' caches: +${fmtUsd(r.agentCold.penalty)}`)
   return parts.join(' · ')
+}
+
+/**
+ * A row's share of the weekly limit, as Claude Code's own readings around its
+ * turn measured it (account-wide). The readings move in whole percents (or
+ * tenths), so no change reads as less than one step.
+ */
+function weeklyShare(r: MeterRow): string | undefined {
+  const w = r.limits?.find(l => l.label === 'Weekly')
+  if (!w || w.didReset) return undefined
+  if (w.delta > 0) return fmtPoints(w.delta)
+  return Number.isInteger(w.now ?? 0) ? '<1%' : '<0.1%'
+}
+
+/** One short line for a row that paid for a lapsed cache; its details say more. */
+function lapseWords(r: MeterRow): { text: string; warn: boolean } | undefined {
+  if (r.penalty <= 0.005) return undefined
+  const conversation = r.penalty - r.agentCold.penalty
+  if (conversation <= 0.005) return { text: `△ Agent caches lapsed: +${fmtUsd(r.agentCold.penalty)}`, warn: false }
+  const first = r.cache === 'cold' || r.cache === 'partial'
+  const why = !first
+    ? 'mid-turn'
+    : r.reason === 'idle'
+      ? originClass(r.origin) === 'person'
+        ? `after ${fmtDuration(r.idleMs ?? 0)} away`
+        : `${fmtDuration(r.idleMs ?? 0)} after Claude's last request`
+      : r.reason === 'model-switch'
+        ? 'the model changed'
+        : 'the cache missed'
+  return { text: `▲ Cache had lapsed, ${why}: +${fmtUsd(r.penalty)}`, warn: true }
 }
 
 /** A later main-thread request of a row that found the cache lapsed, worded by why. */
@@ -882,7 +912,6 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const view = await read($, VIEW)
     const ui = await read($, UI)
-    const measure = await read($, MEASURE)
     await read($, TICK)
     const now = await $.clock.now()
     const els = $.ui.resolve(e)
@@ -904,7 +933,6 @@ export const register: Register = on => {
     const t = view.totals
     const ttl = view.ttl
     const est = estimateNext(reqOfLastMain(view.lastMain, ttl), now, ttl, priceFor, view.compactedAt)
-    const limits = measure?.rateLimits ?? []
     const rows = view.rows.slice(-PANE_ROWS).reverse()
     const expanded = new Set(ui.expanded)
     const approx = view.estimatedRequests ? '≈' : ''
@@ -1002,42 +1030,6 @@ export const register: Register = on => {
       )
     }
 
-    // ------------------------------------------------ plan limits
-    const plan = limits.length ? (
-      <Box key="plan" flexDirection="column" gap="xs">
-        {label('plan-label', 'Plan limits', 'all your chats')}
-        {limits.map(l => {
-          const pct = Math.round(l.percentUsed * 10) / 10
-          const high = l.percentUsed >= 80
-          const resets = l.resetsAt ? Date.parse(l.resetsAt) - now : NaN
-          return (
-            <Box key={`limit-${l.kind}`} flexDirection="column" gap="xs">
-              <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-                <Text>{limitLabel(l.kind)}</Text>
-                {high ? (
-                  <Text tabular color="warning">
-                    ▲ {pct}% used
-                  </Text>
-                ) : (
-                  <Text tabular>{pct}% used</Text>
-                )}
-              </Box>
-              {Svg ? (
-                <Svg source={meterSvg(l.percentUsed / 100, W, 4, high ? WARN_COLOR : NEUTRAL_COLOR)} alt={`${limitLabel(l.kind)}: ${pct}% used`} height={4} />
-              ) : (
-                <Text dimColor>{bar(l.percentUsed / 100, 24)}</Text>
-              )}
-              {Number.isFinite(resets) && resets > 0 ? (
-                <Text size="caption" dimColor>
-                  Resets in {fmtDuration(resets)}
-                </Text>
-              ) : null}
-            </Box>
-          )
-        })}
-      </Box>
-    ) : null
-
     // ------------------------------------------------ cost per message
     const shown = Math.min(40, view.rows.length)
     const chart = Svg ? (
@@ -1073,43 +1065,6 @@ export const register: Register = on => {
     )
 
     // ------------------------------------------------ messages
-    const stateChip = (r: MeterRow) => {
-      switch (r.cache) {
-        case 'cold':
-          return (
-            <Text size="caption" color="warning">
-              ▲ cold
-            </Text>
-          )
-        case 'partial':
-          return (
-            <Text size="caption" color="warning">
-              △ partial
-            </Text>
-          )
-        case 'warm':
-          return (
-            <Text size="caption" dimColor>
-              warm
-            </Text>
-          )
-        case 'reset':
-          return (
-            <Text size="caption" dimColor>
-              ↺ rebuilt
-            </Text>
-          )
-        case 'first':
-          return (
-            <Text size="caption" dimColor>
-              first
-            </Text>
-          )
-        default:
-          return null
-      }
-    }
-    const maxRow = Math.max(0.0001, ...rows.filter(r => r.origin !== 'background').map(r => r.total))
     const rowNodes = rows.map(row => {
       if (row.origin === 'background') {
         return (
@@ -1126,9 +1081,11 @@ export const register: Register = on => {
         )
       }
       const isOpen = expanded.has(row.id)
-      const cold = coldWords(row, ttl)
       const origin = originLabel(row.origin).replace(/: $/, '')
       const meta = [`#${row.n}`, clock(row.at), origin, row.open ? 'running' : row.live ? 'live' : ''].filter(Boolean).join(' · ')
+      const weekly = weeklyShare(row)
+      const lapse = lapseWords(row)
+      const cold = coldWords(row, ttl)
       const plan = limitWords(row)
       return (
         <Box key={row.id} flexDirection="column" gap="xs" marginTop="lg">
@@ -1143,63 +1100,75 @@ export const register: Register = on => {
               {fmtUsd(row.total)}
             </Text>
           </Box>
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-            <Text size="caption" dimColor>
-              {meta}
-            </Text>
-            {stateChip(row)}
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+            <Box flexDirection="row" alignItems="center" gap="sm" flexShrink={1} minWidth={0}>
+              <Text size="caption" dimColor wrap="truncate-end">
+                {meta}
+              </Text>
+              <Button key={`toggle-${row.id}`} plain dimColor label={isOpen ? 'Hide details' : 'Details'} onPress={() => toggle(row.id)} />
+            </Box>
+            {weekly ? (
+              <Box flexDirection="row" alignItems="center" gap="xs" flexShrink={0}>
+                <Text weight="semibold" tabular>
+                  {weekly}
+                </Text>
+                <Text dimColor>weekly</Text>
+              </Box>
+            ) : null}
           </Box>
-          {Svg ? (
-            <Svg source={splitBarSvg(row.you, row.claude, W, 6, row.total / maxRow, true)} alt={`You ${fmtUsd(row.you)}, Claude ${fmtUsd(row.claude)}, against the costliest message shown`} height={6} />
+          {lapse ? (
+            lapse.warn ? (
+              <Text size="caption" color="warning">
+                {lapse.text}
+              </Text>
+            ) : (
+              <Text size="caption" dimColor>
+                {lapse.text}
+              </Text>
+            )
           ) : null}
-          <Box flexDirection="row" gap="sm">
-            <Text color={YOU_COLOR}>■</Text>
-            <Text tabular>You {fmtUsd(row.you)}</Text>
-            <Text dimColor wrap="truncate-end">
-              {youWords(row)}
-            </Text>
-          </Box>
-          {cold ? <Text color="warning">{cold}</Text> : null}
-          <Box flexDirection="row" gap="sm">
-            <Text color={CLAUDE_COLOR}>■</Text>
-            <Text tabular>
-              Claude {row.estimated ? '≈' : ''}
-              {fmtUsd(row.claude)}
-            </Text>
-            <Text dimColor wrap="truncate-end">
-              {claudeWords(row)}
-            </Text>
-          </Box>
-          {row.midTurn.map((m, i) => (
-            <Text key={`mid-${i}`} color="warning">
-              {midTurnWords(m)}
-            </Text>
-          ))}
-          {row.agentCold.count ? (
-            <Text dimColor>
-              △ {row.agentCold.count} agent request{row.agentCold.count === 1 ? '' : 's'} found the agent's 5-minute cache lapsed: +{fmtUsd(row.agentCold.penalty)}
-            </Text>
-          ) : null}
-          {plan ? (
-            <Text size="caption" dimColor>
-              {plan}
-            </Text>
-          ) : null}
-          {row.detail && row.detail.length ? (
-            <Button
-              key={`toggle-${row.id}`}
-              plain
-              label={isOpen ? 'Hide requests' : `Show ${row.detail.length} request line${row.detail.length === 1 ? '' : 's'}`}
-              onPress={() => toggle(row.id)}
-            />
-          ) : null}
-          {isOpen && row.detail
-            ? row.detail.map((q, i) => (
+          {isOpen ? (
+            <Box flexDirection="column" gap="xs" marginTop="xs">
+              <Box flexDirection="row" gap="sm">
+                <Text color={YOU_COLOR}>■</Text>
+                <Text tabular>You {fmtUsd(row.you)}</Text>
+                <Text dimColor wrap="truncate-end">
+                  {youWords(row)}
+                </Text>
+              </Box>
+              {cold ? <Text color="warning">{cold}</Text> : null}
+              <Box flexDirection="row" gap="sm">
+                <Text color={CLAUDE_COLOR}>■</Text>
+                <Text tabular>
+                  Claude {row.estimated ? '≈' : ''}
+                  {fmtUsd(row.claude)}
+                </Text>
+                <Text dimColor wrap="truncate-end">
+                  {claudeWords(row)}
+                </Text>
+              </Box>
+              {row.midTurn.map((m, i) => (
+                <Text key={`mid-${i}`} color="warning">
+                  {midTurnWords(m)}
+                </Text>
+              ))}
+              {row.agentCold.count ? (
+                <Text dimColor>
+                  △ {row.agentCold.count} agent request{row.agentCold.count === 1 ? '' : 's'} found the agent's 5-minute cache lapsed: +{fmtUsd(row.agentCold.penalty)}
+                </Text>
+              ) : null}
+              {plan ? (
+                <Text size="caption" dimColor>
+                  {plan}
+                </Text>
+              ) : null}
+              {(row.detail ?? []).map((q, i) => (
                 <Text key={`d-${row.id}-${i}`} size="caption" dimColor wrap="truncate-end">
                   {detailWords(q)}
                 </Text>
-              ))
-            : null}
+              ))}
+            </Box>
+          ) : null}
         </Box>
       )
     })
@@ -1219,14 +1188,14 @@ export const register: Register = on => {
             Counting live: the transcript has not been read yet.
           </Text>
         ) : null}
-        <Button key="usage-meter-about" plain label={about ? 'Hide notes' : 'About these numbers'} onPress={() => toggle(ABOUT)} />
+        <Button key="usage-meter-about" plain dimColor label={about ? 'Hide notes' : 'About these numbers'} onPress={() => toggle(ABOUT)} />
         {about ? (
           <Box flexDirection="column" gap="xs">
             <Text size="caption" dimColor>
               You: what reading the conversation plus your new message cost. Claude: everything it did to answer, thinking, writing, tools, agents and the advisor.
             </Text>
             <Text size="caption" dimColor>
-              Dollars are API list-price equivalents for comparison; a subscription doesn't charge them. Plan limits are Claude Code's own readings for your whole account, so they include your other chats.
+              Dollars are API list-price equivalents for comparison; a subscription doesn't charge them. The weekly share is the change in Claude Code's own weekly-limit reading while the message ran; it covers your whole account, so other chats running at the same time count too, and the reading moves in whole steps, so a small message shows as less than one.
             </Text>
             {view.estimatedRequests ? (
               <Text size="caption" dimColor>
@@ -1242,7 +1211,6 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {session}
         {cache}
-        {plan}
         {chart}
         {label('messages-label', 'Messages', 'newest first')}
         {rowNodes}

@@ -86,8 +86,11 @@ test('a message shows on the pane with what it used, on desktop and terminal', a
     expect(await ui.find({ type: 'Text', text: /^You \$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Claude \$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /API-equivalent/ })).toBeDefined()
-    // The weekly window moved 0.4 points while the turn ran.
-    expect(await ui.find({ type: 'Text', text: /Weekly \+0\.4%/ })).toBeDefined()
+    // The weekly window moved 0.4 points while the turn ran: shown beside the message's cost.
+    expect(await ui.find({ type: 'Text', text: /^\+0\.4%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^weekly$/ })).toBeDefined()
+    // Plan limits are not repeated in the pane; the app already shows them.
+    expect(await ui.find({ type: 'Text', text: /Plan limits/ })).toBeUndefined()
     const svg = await ui.find({ type: 'Svg' })
     expect(surface === 'desktop' ? svg !== undefined : svg === undefined).toBe(true)
     await ui.unmount()
@@ -128,8 +131,14 @@ test('a message sent after the cache lapsed is flagged with what re-writing cost
   await $.turn.complete({ answer: 'two', durationMs: 1_000, isAborted: false, turnId: 't2', reason: 'answer', usage: COLD })
   await clock.advance(1_500)
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /back after three hours/ })).toBeDefined()
+  // One short line under the message says the cache had lapsed and what it cost...
+  expect(await ui.find({ type: 'Text', text: /Cache had lapsed, after 3h away/ })).toBeDefined()
+  // ...and the message's details say why, and how much was written again.
+  await ui.press({ key: 'toggle-t2' })
+  await ui.unmount()
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /You were away 3h/ })).toBeDefined()
   // The cache could have served the previous request's 202k-token prompt; it served 30k.
   expect(await ui.find({ type: 'Text', text: /re-wrote 172k tokens/ })).toBeDefined()
@@ -153,8 +162,13 @@ test('a turn a background task started after the cache lapsed is not blamed on y
   expect(/away/.test(done.text)).toBe(false)
   await clock.advance(1_500)
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /Workflow "Review" completed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cache had lapsed, 3h after Claude's last request/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /away/ })).toBeUndefined()
+  await ui.press({ key: 'toggle-t2' })
+  await ui.unmount()
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /notification woke Claude 3h after its last request/ })).toBeDefined()
   await ui.unmount()
 })
