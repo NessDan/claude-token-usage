@@ -30,6 +30,7 @@ import {
   encodeSeen,
   encodeSpend,
   estimatedShare,
+  fmtEstimate,
   fmtShare,
   noteReading,
   spendBetween,
@@ -140,6 +141,25 @@ describe('transcript parsing', () => {
       reply(T0 + 3000, 'b', { read: 5100 }),
     ))
     assert.deepEqual(t.exchanges.map(e => [e.origin, e.prompt]), [['task-notification', 'Workflow "Research" completed'], ['queued', 'also do this']])
+  })
+
+  test("the desktop app's notices read as what they are, not as messages you typed", () => {
+    // The app writes them as plain user lines, with no origin of their own.
+    const sessions = '<system-reminder>\nThe session "x" finished a turn.\n</system-reminder>\n<side-sessions-event>None of the sessions you started is working now.</side-sessions-event>'
+    const ci = '<ci-monitor-event>CI failed on the pull request.</ci-monitor-event>'
+    const t = parseTranscript(lines(
+      prompt(T0, sessions, { origin: undefined }),
+      reply(T0 + 1000, 'a', { read: 5000 }),
+      prompt(T0 + 2000, ci, { origin: undefined }),
+      reply(T0 + 3000, 'b', { read: 5100 }),
+      prompt(T0 + 4000, 'a <side-sessions-event> I typed myself'),
+      reply(T0 + 5000, 'c', { read: 5200 }),
+    ))
+    assert.deepEqual(t.exchanges.map(e => [e.origin, e.prompt]), [
+      ['app-event', 'Sessions Claude started reported back'],
+      ['app-event', 'Update on a pull request'],
+      ['human', 'a <side-sessions-event> I typed myself'],
+    ])
   })
 
   test('the advisor run inside a request becomes its own request on its own model', () => {
@@ -858,5 +878,19 @@ describe('the weekly share estimate', () => {
     assert.equal(fmtShare(0.123), '0.12%')
     assert.equal(fmtShare(1.44), '1.4%')
     assert.equal(fmtShare(12.4), '12%')
+    // The band is picked after rounding.
+    assert.equal(fmtShare(0.996), '1.0%')
+    assert.equal(fmtShare(9.96), '10%')
+    // An estimate takes its mark, except a bound.
+    assert.equal(fmtEstimate(0.123), '≈0.12%')
+    assert.equal(fmtEstimate(0.004), '<0.01%')
+  })
+
+  test('the calibration keeps the newest reading any chat saw, for the pane to read the week from', () => {
+    const resets = T0 + 3 * 24 * 60 * MIN
+    const a: ChatLedger = { id: 'a', at: T0 + 2 * MIN, spend: [], seen: [{ first: T0, last: T0 + MIN, pct: 41, resets }] }
+    const b: ChatLedger = { id: 'b', at: T0 + 3 * MIN, spend: [], seen: [{ first: T0 + 2 * MIN, last: T0 + 90_000, pct: 42, resets }] }
+    assert.deepEqual(calibrate([a, b], T0 + 5 * MIN).latest, { pct: 42, resets, at: T0 + 2 * MIN })
+    assert.equal(calibrate([], T0).latest, undefined)
   })
 })

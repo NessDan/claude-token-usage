@@ -64,6 +64,40 @@ export function meterSvg(fraction: number, width: number, height: number, fill: 
   return svgDoc(width, height, `<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>${filled}`)
 }
 
+/** The account's use of the weekly limit, under this chat's slice. */
+const USED = 'rgba(154,151,143,0.55)'
+
+/**
+ * The weekly limit as one meter: the faint rail is the whole limit, the gray
+ * part what the account has used of it this week (`used`, 0 to 1; undefined
+ * when there is no reading in this week yet), and on top, from the left, this
+ * chat's share (`you` + `claude`, fractions of the limit), split as your
+ * messages (blue) and Claude's replies (orange).
+ */
+export function weekMeterSvg(you: number, claude: number, used: number | undefined, width: number, height: number): string {
+  const f = (x: number | undefined) => Math.max(0, Math.min(1, x !== undefined && Number.isFinite(x) ? x : 0))
+  const r = height / 2
+  const parts = [`<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>`]
+  const a = f(you) * width
+  const b = f(claude) * width
+  const chat = Math.min(width, a + b)
+  const u = Math.max(f(used) * width, chat)
+  if (u >= 0.5) parts.push(`<rect x="0" y="0" width="${px(Math.max(u, height))}" height="${height}" rx="${r}" fill="${USED}"/>`)
+  if (chat > 0) {
+    // A slice too thin to see keeps 3 px; the figure beside the meter says how big it is.
+    const w = Math.max(chat, 3)
+    const both = a > 0 && b > 0 && w >= 8
+    const gap = both ? 1.5 : 0
+    const wa = both ? Math.min(Math.max((a / (a + b)) * (w - gap), 2), w - gap - 2) : a >= b ? w : 0
+    const wb = both ? w - gap - wa : a >= b ? 0 : w
+    parts.push(`<clipPath id="c"><rect x="0" y="0" width="${px(w)}" height="${height}" rx="${r}"/></clipPath><g clip-path="url(#c)">`)
+    if (wa > 0) parts.push(`<rect x="0" y="0" width="${px(wa)}" height="${height}" fill="${YOU_COLOR}"/>`)
+    if (wb > 0) parts.push(`<rect x="${px(wa + gap)}" y="0" width="${px(wb)}" height="${height}" fill="${CLAUDE_COLOR}"/>`)
+    parts.push('</g>')
+  }
+  return svgDoc(width, height, parts.join(''))
+}
+
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 }

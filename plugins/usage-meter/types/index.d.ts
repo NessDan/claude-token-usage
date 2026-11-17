@@ -141,6 +141,8 @@ export type WeeklyState = {
   /** The first and last anchor used. */
   from?: number
   to?: number
+  /** The newest weekly reading any chat here saw (`pct` used, the window resetting at `resets`, known at `at`); older entries lack it. */
+  latest?: { pct: number; resets: number; at: number }
   /** Points needed before the estimate is shown. */
   minPoints: number
   /** When it was worked out. */

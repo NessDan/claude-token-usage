@@ -386,10 +386,18 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    // Beside the message's cost, and beside the chat's total (this message is all of it).
+    // Beside the message's cost.
     expect(await ui.find({ type: 'Text', text: /^≈0\.27%$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^weekly$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^of weekly$/ })).toBeDefined()
+    // The weekly section: this chat's spend this week ($11 stored before this
+    // load, and this message's $2.70) at the rate, and the account's 45%.
+    expect(await ui.find({ type: 'Text', text: /^Weekly limit$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^≈1\.4%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^this chat$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^45%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^resets / })).toBeDefined()
+    // No longer beside the dollar total, which spans every week the chat ran.
+    expect(await ui.find({ type: 'Text', text: /^of weekly$/ })).toBeUndefined()
     await ui.unmount()
   }
   // What the estimate is based on, and what makes it run high, are in the notes.
@@ -426,10 +434,27 @@ test('until the weekly window has stepped up a few points, a row shows the measu
   expect(await ui.find({ type: 'Text', text: /^<1%$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^≈/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^of weekly$/ })).toBeUndefined()
+  // The weekly section says what it has, and that it is rough.
+  expect(await ui.find({ type: 'Text', text: /^while this chat worked$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Rough until the estimate is ready/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^this chat$/ })).toBeUndefined()
   await ui.press({ key: 'usage-meter-about' })
   await ui.unmount()
   ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /stepped up 3 points while chats here were working \(2 so far\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 points have been measured between closely timed steps while chats here were working \(2 so far\)/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a notice the app writes into the chat is labelled as one, not shown as typed', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  engine(on, [WARM], [[]])
+  const notice = '<system-reminder>\nThe session you started finished a turn.\n</system-reminder>\n<side-sessions-event>None of the sessions you started is working now.</side-sessions-event>'
+  await $.turn.start({ text: notice, turnId: 't1' })
+  await runStep($ as never, 't1', 0)
+  await $.turn.complete({ answer: 'ok', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer', usage: WARM })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Sessions Claude started reported back$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /side-sessions-event/ })).toBeUndefined()
   await ui.unmount()
 })
 

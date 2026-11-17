@@ -85,7 +85,12 @@ export type Calibration = {
   /** The first and last anchor used. */
   from?: number
   to?: number
+  /** The newest weekly reading any chat here saw: its value, its window's reset, and when it was last known to hold. */
+  latest?: LatestReading
 }
+
+/** A weekly reading as of a moment: `pct` used, the window resetting at `resets`, known at `at`. */
+export type LatestReading = { pct: number; resets: number; at: number }
 
 // ---------------------------------------------------------------- encoding
 
@@ -337,6 +342,11 @@ export function calibrate(chats: readonly ChatLedger[], now: number): Calibratio
     }
   }
   points = Math.round(points * 10) / 10
+  let latest: LatestReading | undefined
+  for (const r of runs) {
+    const at = Math.max(r.first, r.last)
+    if (!latest || at > latest.at) latest = { pct: r.pct, resets: r.resets, at }
+  }
   const out: Calibration = {
     ready: points >= MIN_POINTS && usd > 0 && edgeUsd <= usd * MAX_EDGE_SHARE,
     pointsPerUsd: usd > 0 ? points / usd : 0,
@@ -348,6 +358,7 @@ export function calibrate(chats: readonly ChatLedger[], now: number): Calibratio
   }
   if (from !== undefined) out.from = from
   if (to !== undefined) out.to = to
+  if (latest) out.latest = latest
   return out
 }
 
@@ -357,11 +368,17 @@ export function estimatedShare(usd: number, cal: { ready: boolean; pointsPerUsd:
   return usd * cal.pointsPerUsd
 }
 
-/** A share of the weekly limit: "<0.01%", "0.12%", "1.4%", "12%". */
+/** A share of the weekly limit: "<0.01%", "0.12%", "1.4%", "12%". The band is picked after rounding, so 0.996 reads "1.0%", not "1.00%". */
 export function fmtShare(pct: number): string {
   if (!Number.isFinite(pct) || pct <= 0) return '0%'
   if (pct < 0.005) return '<0.01%'
-  if (pct < 1) return `${pct.toFixed(2)}%`
-  if (pct < 10) return `${pct.toFixed(1)}%`
+  if (Number(pct.toFixed(2)) < 1) return `${pct.toFixed(2)}%`
+  if (Number(pct.toFixed(1)) < 10) return `${pct.toFixed(1)}%`
   return `${Math.round(pct)}%`
+}
+
+/** An estimated share with its mark: "≈0.12%"; "<0.01%" is a bound already, so it takes none. */
+export function fmtEstimate(pct: number): string {
+  const s = fmtShare(pct)
+  return s.startsWith('<') ? s : `≈${s}`
 }

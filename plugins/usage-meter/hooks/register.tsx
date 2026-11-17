@@ -29,9 +29,9 @@ import type {
   MeterView,
   WeeklyState,
 } from '../types/index.d.ts'
-import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, YOU_COLOR } from '../lib/chart.ts'
+import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, weekMeterSvg, YOU_COLOR } from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
-import { agentIdFromPath, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
+import { agentIdFromPath, appEventOf, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
 import { bar, estimateNext, fmtDuration, fmtPoints, fmtTokens, fmtUsd, limitDeltas, limitLabel, preview, ttlMs } from '../lib/usage.ts'
 import { buildTranscriptView, chatSpend, isCovered, reqOfLastMain, withLive } from '../lib/view.ts'
@@ -41,7 +41,7 @@ import {
   decodeEntry,
   encodeEntry,
   estimatedShare,
-  fmtShare,
+  fmtEstimate,
   KEEP_MS,
   LEDGER_PREFIX,
   MIN_POINTS,
@@ -49,6 +49,7 @@ import {
   overlaySpend,
   pruneLedger,
   SETTLE_MS,
+  spendBetween,
 } from '../lib/weekly.ts'
 
 const PANE = 'usage-meter'
@@ -158,13 +159,14 @@ function samePath(a: string, b: string): boolean {
 
 function originOfText(text: string): string {
   if (/^\s*<task-notification>/.test(text)) return 'task-notification'
+  if (appEventOf(text)) return 'app-event'
   return text.trim() ? 'human' : 'continue'
 }
 
-/** Who started a row: the person (typed, from a phone, queued), a machine (a notification, another session), or unknown. */
+/** Who started a row: the person (typed, from a phone, queued), a machine (a notification, another session, the app), or unknown. */
 function originClass(origin: string): 'person' | 'machine' | 'other' {
   if (['human', 'composer', 'bridge', 'sdk', 'queued'].includes(origin)) return 'person'
-  if (['task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay'].includes(origin)) return 'machine'
+  if (['task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'app-event'].includes(origin)) return 'machine'
   return 'other'
 }
 
@@ -196,6 +198,8 @@ function wakerWords(origin: string): string {
       return "another session's message"
     case 'scheduled-trigger':
       return 'the scheduled task'
+    case 'app-event':
+      return "the app's notice"
     default:
       return 'this turn'
   }
@@ -339,7 +343,7 @@ function limitWords(r: MeterRow): string | undefined {
 /** A message's estimated share of the weekly limit, "≈0.12% of weekly", once the calibration is ready. */
 function shareWords(r: MeterRow, calib: WeeklyState | null): string | undefined {
   const share = estimatedShare(r.total, calib)
-  return share === undefined ? undefined : `≈${fmtShare(share)} of weekly`
+  return share === undefined ? undefined : `${fmtEstimate(share)} of weekly`
 }
 
 /** A time, with its weekday when it was not today. */
@@ -356,7 +360,51 @@ function weeklyNote(w: WeeklyState | null, now: number): string {
     return `The weekly share (≈) is an estimate: the message's dollars times the rate your weekly limit moved at while your chats here spent. 1% of your weekly limit ≈ ${fmtUsd(1 / w.pointsPerUsd)} of use here, from ${w.points} points over ${fmtUsd(w.usd)} spent by ${chats} on this computer since ${dayClock(w.from ?? w.at, now)}.`
   }
   const sofar = !w || !w.points ? '' : w.points < w.minPoints ? ` (${w.points} so far)` : ` (${w.points} so far, not yet timed closely enough)`
-  return `The weekly share is the change in Claude Code's own weekly-limit reading while the message ran. It covers your whole account, so other chats running at the same time count too, and the reading moves in whole steps, so a small message shows as less than one. Once the limit has stepped up ${MIN_POINTS} points while chats here were working${sofar}, each message gets an estimate instead, marked ≈.`
+  return `The weekly share is the change in Claude Code's own weekly-limit reading while the message ran. It covers your whole account, so other chats running at the same time count too, and the reading moves in whole steps, so a small message shows as less than one. Once ${MIN_POINTS} points have been measured between closely timed steps while chats here were working${sofar}, each message gets an estimate instead, marked ≈.`
+}
+
+const WEEK_MS = 7 * 24 * 3_600_000
+
+/** The weekly window as the newest reading has it. `pct` is left out when the window has reset since that reading. */
+type WeekWindow = { start: number; resets: number; pct?: number; at: number }
+
+/**
+ * The current weekly window, from the newest reading at hand: this chat's own,
+ * or a later one another chat here saw (the calibration keeps it). A reading
+ * whose window has since reset says only when the new week began.
+ */
+function weekWindow(measure: MeasureState | null, calib: WeeklyState | null, now: number): WeekWindow | undefined {
+  const seen: { pct: number; resets: number; at: number }[] = []
+  const own = measure?.rateLimits.find(l => l.kind === 'seven_day')
+  const resets = own?.resetsAt ? Date.parse(own.resetsAt) : NaN
+  if (measure && own && Number.isFinite(resets)) seen.push({ pct: own.percentUsed, resets, at: measure.at })
+  if (calib?.latest && Number.isFinite(calib.latest.resets)) seen.push(calib.latest)
+  if (!seen.length) return undefined
+  const r = seen.reduce((a, b) => (b.at > a.at ? b : a))
+  if (r.resets > now) return { start: r.resets - WEEK_MS, resets: r.resets, pct: r.pct, at: r.at }
+  let next = r.resets
+  while (next <= now) next += WEEK_MS
+  return { start: next - WEEK_MS, resets: next, at: r.at }
+}
+
+/**
+ * What the weekly reading moved by while this chat's messages since `start`
+ * ran: account-wide, in whole steps. Undefined when none of them was measured.
+ */
+function measuredWeek(rows: readonly MeterRow[], start: number): number | undefined {
+  let sum: number | undefined
+  for (const r of rows) {
+    if (r.at < start) continue
+    const w = r.limits?.find(l => l.label === 'Weekly')
+    if (!w || w.didReset) continue
+    sum = (sum ?? 0) + Math.max(0, w.delta)
+  }
+  return sum
+}
+
+/** A reading of the weekly window: "41%", or "41.5%" where the account reports tenths. */
+function fmtPct(p: number): string {
+  return Number.isInteger(p) ? `${p}%` : `${p.toFixed(1)}%`
 }
 
 /** The one line shown beneath Claude's answer for the message that just finished. */
@@ -394,7 +442,7 @@ function noteLine(r: MeterRow, ttl: Ttl, calib: WeeklyState | null): string {
  */
 function weeklyShare(r: MeterRow, calib: WeeklyState | null): string | undefined {
   const est = estimatedShare(r.total, calib)
-  if (est !== undefined) return `≈${fmtShare(est)}`
+  if (est !== undefined) return fmtEstimate(est)
   const w = r.limits?.find(l => l.label === 'Weekly')
   if (!w || w.didReset) return undefined
   if (w.delta > 0) return fmtPoints(w.delta)
@@ -763,20 +811,25 @@ async function loadOwn($: EngineInterface, key: string): Promise<boolean> {
   return true
 }
 
+/**
+ * This chat's spend by the minute: its transcript's own requests, the live ones
+ * the transcript doesn't hold yet, and compaction's. Before any transcript read
+ * in this load, what was stored stands for the minutes before the live requests.
+ */
+function chatSeries(live: LiveState, ttl: Ttl, now: number): SpendSeries {
+  const spend = chatSpend(base, live.exchanges, live.extras ?? [], ttl, now)
+  if (base) return spend
+  let first = Infinity
+  for (const x of live.exchanges) for (const r of x.reqs) first = Math.min(first, r.at)
+  for (const r of live.extras ?? []) first = Math.min(first, r.at)
+  return overlaySpend(ownStoredSpend, spend, Number.isFinite(first) ? Math.floor(first / 60_000) : Infinity)
+}
+
 /** This chat's ledger as it stands: what its transcript and live requests cost, by the minute, and the readings it saw. */
 async function ownLedger($: EngineInterface, key: string, now: number): Promise<ChatLedger> {
   const live = await read($, LIVE)
   const ttl = base?.ttl ?? ttlFallback(await read($, MEASURE))
-  let spend = chatSpend(base, live.exchanges, live.extras ?? [], ttl, now)
-  if (!base) {
-    // No transcript read in this load (yet): keep what was stored for the
-    // minutes before the live requests begin.
-    let first = Infinity
-    for (const x of live.exchanges) for (const r of x.reqs) first = Math.min(first, r.at)
-    for (const r of live.extras ?? []) first = Math.min(first, r.at)
-    spend = overlaySpend(ownStoredSpend, spend, Number.isFinite(first) ? Math.floor(first / 60_000) : Infinity)
-  }
-  return pruneLedger({ id: key, at: now, spend, seen: ownSeen }, now)
+  return pruneLedger({ id: key, at: now, spend: chatSeries(live, ttl, now), seen: ownSeen }, now)
 }
 
 /**
@@ -959,7 +1012,8 @@ export const register: Register = on => {
       turn = since === undefined ? { id: e.turnId, at, before } : { id: e.turnId, at, before, since }
       await openPaneUnasked($)
       const text = e.text ?? ''
-      const origin = pendingOrigin && at - pendingOrigin.at < 30_000 ? pendingOrigin.kind : originOfText(text)
+      // The app's notices come in as typed text, whatever the engine stamped.
+      const origin = appEventOf(text) ? 'app-event' : pendingOrigin && at - pendingOrigin.at < 30_000 ? pendingOrigin.kind : originOfText(text)
       pendingOrigin = undefined
       await update($, LIVE, s => openLive(s, { id: e.turnId, at, prompt: preview(cleanPrompt(text) || '(continued)', 200), origin, open: true, reqs: [] }))
       await scheduleRebuild($)
@@ -1159,6 +1213,8 @@ export const register: Register = on => {
     const view = await read($, VIEW)
     const ui = await read($, UI)
     const calib = await read($, WEEKLY)
+    const measure = await read($, MEASURE)
+    const live = await read($, LIVE)
     await read($, TICK)
     const now = await $.clock.now()
     const els = $.ui.resolve(e)
@@ -1183,8 +1239,6 @@ export const register: Register = on => {
     const rows = view.rows.slice(-PANE_ROWS).reverse()
     const expanded = new Set(ui.expanded)
     const approx = view.estimatedRequests ? '≈' : ''
-    // The chat's whole spend as a share of the weekly limit, once the calibration is ready.
-    const chatShare = estimatedShare(t.usd, calib)
 
     // A quiet section label, with a note on the right.
     const label = (key: string, title: string, note?: string) => (
@@ -1213,22 +1267,12 @@ export const register: Register = on => {
             {t.messages} message{t.messages === 1 ? '' : 's'} · {fmtTokens(t.tokens)} tokens
           </Text>
         </Box>
-        <Box flexDirection="row" justifyContent="space-between" alignItems="flex-end" gap="md">
-          <Box flexDirection="row" alignItems="flex-end" gap="sm">
-            <Text size="title" weight="semibold" tabular>
-              {approx}
-              {fmtUsd(t.usd)}
-            </Text>
-            <Text dimColor>API-equivalent</Text>
-          </Box>
-          {chatShare !== undefined ? (
-            <Box flexDirection="row" alignItems="flex-end" gap="xs" flexShrink={0}>
-              <Text weight="semibold" tabular>
-                ≈{fmtShare(chatShare)}
-              </Text>
-              <Text dimColor>of weekly</Text>
-            </Box>
-          ) : null}
+        <Box flexDirection="row" alignItems="flex-end" gap="sm">
+          <Text size="title" weight="semibold" tabular>
+            {approx}
+            {fmtUsd(t.usd)}
+          </Text>
+          <Text dimColor>API-equivalent</Text>
         </Box>
         {Svg ? <Svg source={splitBarSvg(t.you, t.claude, W, 8)} alt={`Your messages ${fmtUsd(t.you)}, Claude's replies ${fmtUsd(t.claude)}`} height={8} /> : null}
         <Box flexDirection="row" justifyContent="space-between">
@@ -1247,6 +1291,84 @@ export const register: Register = on => {
         {t.penalty > 0.005 ? <Text color="warning">▲ {fmtUsd(t.penalty)} lost to lapsed caches</Text> : null}
       </Box>
     )
+
+    // ------------------------------------------------ the weekly limit
+    // Only in a chat on a plan: one with a weekly reading of its own, now or earlier.
+    const onPlan = !!measure?.rateLimits.some(l => l.kind === 'seven_day') || ownSeen.length > 0
+    const wk = onPlan ? weekWindow(measure, calib, now) : undefined
+    let weekly = null
+    if (wk) {
+      const rate = calib && calib.ready && calib.pointsPerUsd > 0 ? calib.pointsPerUsd : undefined
+      // This chat's own spend since the week began (a fork's copied history left out), as a share of the limit.
+      // (Up to Infinity: the minute running now counts whole, not the part of it gone by.)
+      const share = rate === undefined ? undefined : spendBetween(chatSeries(live, ttl, now), wk.start, Infinity) * rate
+      // Until then, the account-wide change measured around this chat's messages: never drawn as its slice.
+      const measured = share === undefined ? measuredWeek(view.rows, wk.start) : undefined
+      const weekRows = view.rows.filter(r => r.at >= wk.start)
+      const youUsd = weekRows.reduce((s, r) => s + r.you, 0)
+      const claudeUsd = weekRows.reduce((s, r) => s + r.claude, 0)
+      const youPart = share !== undefined && youUsd + claudeUsd > 0 ? share * (youUsd / (youUsd + claudeUsd)) : 0
+      const head =
+        share !== undefined
+          ? share > 0
+            ? fmtEstimate(share)
+            : '0%'
+          : measured === undefined
+            ? '–'
+            : measured > 0
+              ? fmtPoints(measured)
+              : Number.isInteger(wk.pct ?? 0)
+                ? '<1%'
+                : '<0.1%'
+      const words = share !== undefined ? 'this chat' : measured !== undefined ? 'while this chat worked' : 'not measured yet'
+      const asOf = now - wk.at > 30 * 60_000 ? ` as of ${dayClock(wk.at, now)}` : ''
+      const firstAt = view.rows[0]?.at
+      const caption =
+        wk.pct === undefined
+          ? `No reading since the weekly reset ${dayClock(wk.start, now)} yet.`
+          : share === undefined
+            ? 'Rough until the estimate is ready: the reading moves in whole steps and counts other chats running at the same time.'
+            : firstAt !== undefined && firstAt < wk.start
+              ? `This week only: since the reset ${dayClock(wk.start, now)}.`
+              : undefined
+      weekly = (
+        <Box key="weekly" flexDirection="column" gap="xs">
+          {label('weekly-label', 'Weekly limit', `resets ${dayClock(wk.resets, now)}`)}
+          <Box flexDirection="row" justifyContent="space-between" alignItems="flex-end" gap="md">
+            <Box flexDirection="row" alignItems="flex-end" gap="sm" flexShrink={1} minWidth={0}>
+              <Text size="title" weight="semibold" tabular>
+                {head}
+              </Text>
+              <Text dimColor wrap="truncate-end">
+                {words}
+              </Text>
+            </Box>
+            {wk.pct !== undefined ? (
+              <Box flexDirection="row" alignItems="flex-end" gap="xs" flexShrink={0}>
+                <Text weight="semibold" tabular>
+                  {fmtPct(wk.pct)}
+                </Text>
+                <Text dimColor>used{asOf}</Text>
+              </Box>
+            ) : null}
+          </Box>
+          {Svg ? (
+            <Svg
+              source={weekMeterSvg(youPart / 100, ((share ?? 0) - youPart) / 100, wk.pct === undefined ? undefined : wk.pct / 100, W, 8)}
+              alt={`Weekly limit: ${wk.pct === undefined ? 'no reading this week yet' : `${fmtPct(wk.pct)} used`}${share !== undefined ? `, this chat ${head}` : ''}`}
+              height={8}
+            />
+          ) : (
+            <Text dimColor>{bar((wk.pct ?? 0) / 100, 24)}</Text>
+          )}
+          {caption ? (
+            <Text size="caption" dimColor>
+              {caption}
+            </Text>
+          ) : null}
+        </Box>
+      )
+    }
 
     // ------------------------------------------------ the cache
     let cache = null
@@ -1475,6 +1597,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {session}
+        {weekly}
         {cache}
         {chart}
         {label('messages-label', 'Messages', 'newest first')}

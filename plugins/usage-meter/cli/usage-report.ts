@@ -181,6 +181,7 @@ function requestsCell(r: ExchangeReport): string {
 function originMark(origin: string): string {
   if (origin === 'human') return ''
   if (origin === 'task-notification') return '[task] '
+  if (origin === 'app-event') return '[app] '
   return `[${origin}] `
 }
 

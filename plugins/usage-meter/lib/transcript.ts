@@ -97,13 +97,32 @@ function promptText(content: unknown): string | undefined {
   return texts.join(' ')
 }
 
-/** Turns command wrappers into "/x args", a task notification into its summary, and drops other tags. */
+/**
+ * Notices the desktop app writes into the chat as a user message, with nothing
+ * marking where they came from: the wrapper they start with, once Claude
+ * Code's reminders are set aside, and what their row reads.
+ */
+const APP_EVENTS: Readonly<Record<string, string>> = {
+  'side-sessions-event': 'Sessions Claude started reported back',
+  'ci-monitor-event': 'Update on a pull request',
+}
+
+/** The app notice a prompt is (its wrapper's name), or undefined for anything else. */
+export function appEventOf(text: string): string | undefined {
+  const rest = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trimStart()
+  const m = /^<([a-z-]+)>/.exec(rest)
+  return m && m[1]! in APP_EVENTS ? m[1] : undefined
+}
+
+/** Turns command wrappers into "/x args", a task notification into its summary, an app notice into what it is, and drops other tags. */
 export function cleanPrompt(text: string): string {
   if (/^\s*<task-notification>/.test(text)) {
     const summary = /<summary>([\s\S]*?)<\/summary>/.exec(text)
     const status = /<status>([\s\S]*?)<\/status>/.exec(text)
     return summary?.[1]?.trim() || `Background task ${status?.[1]?.trim() ?? 'finished'}`
   }
+  const event = appEventOf(text)
+  if (event) return APP_EVENTS[event]!
   const name = /<command-name>\s*([^<]*?)\s*<\/command-name>/.exec(text)
   if (name) {
     const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)
@@ -467,7 +486,10 @@ export function createTranscriptParser(): TranscriptParser {
         // Each prompt line starts its own exchange. (promptId is no key: older
         // builds gave every prompt of a session the same one.)
         const msg = asObj(o.message)
-        open(str(o.uuid) ?? `${str(o.promptId) ?? 'p'}:${opened.length}`, cleanPrompt(promptText(msg?.content) ?? ''), originOf(o), at)
+        const text = promptText(msg?.content) ?? ''
+        // The app's notices carry no origin of their own: they read as typed.
+        const origin = originOf(o)
+        open(str(o.uuid) ?? `${str(o.promptId) ?? 'p'}:${opened.length}`, cleanPrompt(text), origin === 'human' && appEventOf(text) ? 'app-event' : origin, at)
         return
       }
       case 'attachment': {
