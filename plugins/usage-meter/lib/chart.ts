@@ -10,8 +10,59 @@ import { fmtUsd } from './usage.ts'
 export const YOU_COLOR = '#3987e5'
 export const CLAUDE_COLOR = '#eb6834'
 export const WARN_COLOR = '#fab219'
+/** A calm fill for meters that carry no series (the cache countdown, a plan limit). */
+export const NEUTRAL_COLOR = '#9a978f'
 const MUTED = '#898781'
 const GRID = 'rgba(137,135,129,0.28)'
+/** The faint rail a meter or bar sits on, readable on light and dark surfaces. */
+const TRACK = 'rgba(137,135,129,0.22)'
+
+function px(n: number): string {
+  return n.toFixed(2)
+}
+
+function svgDoc(width: number, height: number, body: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${px(width)}" height="${height}" viewBox="0 0 ${px(width)} ${height}">${body}</svg>`
+}
+
+/**
+ * A word-sized bar of one split: your message (blue) and Claude's reply
+ * (orange), 2 px apart, ends rounded. `length` (0 to 1) is how much of the
+ * width it fills, so rows can be compared at a glance; `track` draws the rest
+ * of the width as a faint rail.
+ */
+export function splitBarSvg(you: number, claude: number, width: number, height: number, length = 1, track = false): string {
+  const r = height / 2
+  const w = Math.max(0, Math.min(1, length)) * width
+  const parts: string[] = []
+  if (track) parts.push(`<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>`)
+  const a = Math.max(0, you)
+  const b = Math.max(0, claude)
+  const total = a + b
+  if (total > 0 && w >= 1) {
+    const both = a > 0 && b > 0 && w >= 8
+    const gap = both ? 2 : 0
+    const avail = Math.max(0, w - gap)
+    // A part that is not zero keeps at least 2 px, so it stays visible.
+    let wa = both ? Math.min(Math.max((a / total) * avail, 2), avail - 2) : a >= b ? avail : 0
+    const wb = both ? avail - wa : a >= b ? 0 : avail
+    if (!both && a >= b) wa = avail
+    parts.push(`<clipPath id="c"><rect x="0" y="0" width="${px(w)}" height="${height}" rx="${r}"/></clipPath><g clip-path="url(#c)">`)
+    if (wa > 0) parts.push(`<rect x="0" y="0" width="${px(wa)}" height="${height}" fill="${YOU_COLOR}"/>`)
+    if (wb > 0) parts.push(`<rect x="${px(wa + gap)}" y="0" width="${px(wb)}" height="${height}" fill="${CLAUDE_COLOR}"/>`)
+    parts.push('</g>')
+  }
+  return svgDoc(width, height, parts.join(''))
+}
+
+/** A thin meter: a faint rail with `fraction` of it filled. */
+export function meterSvg(fraction: number, width: number, height: number, fill: string): string {
+  const f = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0))
+  const r = height / 2
+  const w = f * width
+  const filled = w >= 0.5 ? `<rect x="0" y="0" width="${px(Math.max(w, height))}" height="${height}" rx="${r}" fill="${fill}"/>` : ''
+  return svgDoc(width, height, `<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>${filled}`)
+}
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -48,11 +99,10 @@ export function miniChartSvg(rows: readonly MeterRow[], width = 360, height = 12
   const band = n ? plotW / n : plotW
   const barW = Math.max(2, Math.min(14, band * 0.62))
   const parts: string[] = []
-  for (const t of [0, max / 2, max]) {
-    const yy = y(t).toFixed(1)
-    parts.push(`<line x1="${left}" x2="${width - right}" y1="${yy}" y2="${yy}" stroke="${GRID}" stroke-width="1"/>`)
-    parts.push(`<text x="${left - 5}" y="${(y(t) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">${esc(t === 0 ? '$0' : fmtUsd(t))}</text>`)
-  }
+  // One faint line at the top value; the baseline is drawn after the bars.
+  parts.push(`<line x1="${left}" x2="${width - right}" y1="${y(max).toFixed(1)}" y2="${y(max).toFixed(1)}" stroke="${GRID}" stroke-width="1" stroke-dasharray="2 3"/>`)
+  parts.push(`<text x="${left - 5}" y="${(y(max) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">${esc(fmtUsd(max))}</text>`)
+  parts.push(`<text x="${left - 5}" y="${(y(0) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="${MUTED}">$0</text>`)
   list.forEach((r, i) => {
     const cx = left + band * i + band / 2
     const x = cx - barW / 2

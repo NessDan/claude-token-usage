@@ -23,11 +23,11 @@ import type {
   MeterRow,
   MeterView,
 } from '../types/index.d.ts'
-import { CLAUDE_COLOR, isColdRow, miniChartSvg, sparkline, YOU_COLOR } from '../lib/chart.ts'
+import { CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, WARN_COLOR, YOU_COLOR } from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
 import { agentIdFromPath, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
-import { estimateNext, fmtDuration, fmtPoints, fmtTokens, fmtUsd, limitDeltas, limitLabel, preview, ttlMs } from '../lib/usage.ts'
+import { bar, estimateNext, fmtDuration, fmtPoints, fmtTokens, fmtUsd, limitDeltas, limitLabel, preview, ttlMs } from '../lib/usage.ts'
 import { buildTranscriptView, isCovered, reqOfLastMain, withLive } from '../lib/view.ts'
 
 const PANE = 'usage-meter'
@@ -40,6 +40,8 @@ const IN_PROCESS_LIMIT = 16_000_000
 const PANE_ROWS = 80
 /** Development aid: when set, every rebuild writes a summary of the view here. Off in the shipped mod. */
 const SNAPSHOT_PATH: string = ''
+/** The pane's notes toggle, kept with the expanded rows. */
+const ABOUT = 'usage-meter-about'
 /** Said whenever the band is hidden, so it can be found again. */
 const HIDE_HINT = 'Usage band hidden. Type /usage-meter show (or /usage-meter) to bring it back.'
 
@@ -883,8 +885,12 @@ export const register: Register = on => {
     const measure = await read($, MEASURE)
     await read($, TICK)
     const now = await $.clock.now()
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    // Graphics where the surface draws SVG; the terminal gets text.
+    const Svg = e.surface === 'terminal' ? undefined : $.ui.resolve(e).Svg
     const cols = Math.max(24, e.props.bodyColumns)
+    const W = Math.max(240, Math.min(560, cols * 8))
 
     if (!view || !view.rows.length) {
       return (
@@ -901,95 +907,266 @@ export const register: Register = on => {
     const limits = measure?.rateLimits ?? []
     const rows = view.rows.slice(-PANE_ROWS).reverse()
     const expanded = new Set(ui.expanded)
-    const chart = e.surface === 'terminal' ? undefined : miniChartSvg(view.rows, Math.max(240, Math.min(560, cols * 8)), 110)
+    const approx = view.estimatedRequests ? '≈' : ''
 
-    const header = (
-      <Box flexDirection="column" key="head">
-        <Box flexDirection="row" gap="sm">
-          <Text size="heading" weight="semibold">{view.estimatedRequests ? '≈' : ''}{fmtUsd(t.usd)}</Text>
-          <Text dimColor>API-equivalent · {t.messages} message{t.messages === 1 ? '' : 's'} · {fmtTokens(t.tokens)} tokens</Text>
-        </Box>
-        <Box flexDirection="row" gap="sm">
-          <Text color={YOU_COLOR}>■</Text>
-          <Text>You {fmtUsd(t.you)}</Text>
-          <Text color={CLAUDE_COLOR}>■</Text>
-          <Text>Claude {view.estimatedRequests ? '≈' : ''}{fmtUsd(t.claude)}</Text>
-          {t.penalty > 0.005 ? <Text color="warning">▲</Text> : null}
-          {t.penalty > 0.005 ? <Text>lapsed caches {fmtUsd(t.penalty)}</Text> : null}
-        </Box>
-        {limits.length ? (
-          <Text dimColor>Plan: {limits.map(l => `${limitLabel(l.kind)} ${Math.round(l.percentUsed * 10) / 10}% used`).join(' · ')}</Text>
-        ) : null}
-        {est.state === 'warm' ? (
-          <Text>
-            ◷ Cache warm for {fmtDuration(est.msLeft)} · your next message re-reads {fmtTokens(est.contextTokens)} tokens ≈ {fmtUsd(est.warmUsd)}
+    // A quiet section label, with a note on the right.
+    const label = (key: string, title: string, note?: string) => (
+      <Box key={key} flexDirection="row" justifyContent="space-between" alignItems="center" marginTop="lg">
+        <Text size="caption" weight="medium" dimColor>
+          {title}
+        </Text>
+        {note ? (
+          <Text size="caption" dimColor>
+            {note}
           </Text>
-        ) : est.state === 'cold' ? (
-          <Text color="warning">
-            ▲ Cache expired {fmtDuration(est.idleMs - ttlMs(ttl))} ago · your next message re-writes {fmtTokens(est.contextTokens)} tokens ≈ {fmtUsd(est.coldUsd)} (warm: {fmtUsd(est.warmUsd)})
-          </Text>
-        ) : est.state === 'compacted' ? (
-          <Text>↺ Conversation compacted since the last request: the next message rebuilds the cache from the summary</Text>
-        ) : null}
-        {view.estimatedRequests ? (
-          <Text dimColor>≈ {view.estimatedRequests} agent request{view.estimatedRequests === 1 ? '' : 's'} had incomplete output counts in the transcript: their output is estimated, likely low</Text>
         ) : null}
       </Box>
     )
+    const toggle = (id: string) =>
+      update($, UI, u => ({ ...u, expanded: u.expanded.includes(id) ? u.expanded.filter(x => x !== id) : [...u.expanded, id].slice(-20) }))
 
-    let chartNode = null
-    if (e.surface === 'terminal') {
-      chartNode = (
-        <Text key="spark" dimColor>
-          Last {Math.min(30, view.rows.length)}: {sparkline(view.rows)}
-        </Text>
-      )
-    } else if (chart) {
-      const { Svg } = $.ui.resolve(e)
-      chartNode = (
-        <Box key="chart" flexDirection="column" marginTop={1}>
-          <Svg source={chart} alt={`Cost of the last ${Math.min(40, view.rows.length)} messages: your message and Claude's reply, stacked`} height={110} isInteractive />
+    // ------------------------------------------------ this chat
+    const session = (
+      <Box key="session" flexDirection="column" gap="xs">
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+          <Text size="caption" weight="medium" dimColor>
+            This chat
+          </Text>
+          <Text size="caption" dimColor>
+            {t.messages} message{t.messages === 1 ? '' : 's'} · {fmtTokens(t.tokens)} tokens
+          </Text>
+        </Box>
+        <Box flexDirection="row" alignItems="flex-end" gap="sm">
+          <Text size="title" weight="semibold" tabular>
+            {approx}
+            {fmtUsd(t.usd)}
+          </Text>
+          <Text dimColor>API-equivalent</Text>
+        </Box>
+        {Svg ? <Svg source={splitBarSvg(t.you, t.claude, W, 8)} alt={`Your messages ${fmtUsd(t.you)}, Claude's replies ${fmtUsd(t.claude)}`} height={8} /> : null}
+        <Box flexDirection="row" justifyContent="space-between">
+          <Box flexDirection="row" gap="xs">
+            <Text color={YOU_COLOR}>■</Text>
+            <Text tabular>You {fmtUsd(t.you)}</Text>
+          </Box>
+          <Box flexDirection="row" gap="xs">
+            <Text color={CLAUDE_COLOR}>■</Text>
+            <Text tabular>
+              Claude {approx}
+              {fmtUsd(t.claude)}
+            </Text>
+          </Box>
+        </Box>
+        {t.penalty > 0.005 ? <Text color="warning">▲ {fmtUsd(t.penalty)} lost to lapsed caches</Text> : null}
+      </Box>
+    )
+
+    // ------------------------------------------------ the cache
+    let cache = null
+    if (est.state !== 'none') {
+      const left = est.state === 'warm' ? est.msLeft / ttlMs(ttl) : 0
+      cache = (
+        <Box key="cache" flexDirection="column" gap="xs">
+          {label('cache-label', 'Cache', `${ttlWords(ttl)} lifetime`)}
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+            {est.state === 'warm' ? (
+              <Text>◷ Warm for {fmtDuration(est.msLeft)}</Text>
+            ) : est.state === 'cold' ? (
+              <Text color="warning">▲ Expired {fmtDuration(est.idleMs - ttlMs(ttl))} ago</Text>
+            ) : (
+              <Text>↺ Compacted</Text>
+            )}
+            {est.state === 'compacted' ? null : (
+              <Text dimColor tabular>
+                {fmtTokens(est.contextTokens)} tokens
+              </Text>
+            )}
+          </Box>
+          {est.state === 'warm' ? (
+            Svg ? (
+              <Svg source={meterSvg(left, W, 4, NEUTRAL_COLOR)} alt={`${fmtDuration(est.msLeft)} of the ${ttlWords(ttl)} cache left`} height={4} />
+            ) : (
+              <Text dimColor>{bar(left, 24)}</Text>
+            )
+          ) : null}
+          {est.state === 'warm' ? (
+            <Text dimColor>Your next message ≈ {fmtUsd(est.warmUsd)} to re-read the conversation</Text>
+          ) : est.state === 'cold' ? (
+            <Text color="warning">
+              Your next message re-writes it ≈ {fmtUsd(est.coldUsd)} (warm: {fmtUsd(est.warmUsd)})
+            </Text>
+          ) : (
+            <Text dimColor>Since the last request: your next message rebuilds the cache from the summary</Text>
+          )}
         </Box>
       )
     }
 
+    // ------------------------------------------------ plan limits
+    const plan = limits.length ? (
+      <Box key="plan" flexDirection="column" gap="xs">
+        {label('plan-label', 'Plan limits', 'all your chats')}
+        {limits.map(l => {
+          const pct = Math.round(l.percentUsed * 10) / 10
+          const high = l.percentUsed >= 80
+          const resets = l.resetsAt ? Date.parse(l.resetsAt) - now : NaN
+          return (
+            <Box key={`limit-${l.kind}`} flexDirection="column" gap="xs">
+              <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+                <Text>{limitLabel(l.kind)}</Text>
+                {high ? (
+                  <Text tabular color="warning">
+                    ▲ {pct}% used
+                  </Text>
+                ) : (
+                  <Text tabular>{pct}% used</Text>
+                )}
+              </Box>
+              {Svg ? (
+                <Svg source={meterSvg(l.percentUsed / 100, W, 4, high ? WARN_COLOR : NEUTRAL_COLOR)} alt={`${limitLabel(l.kind)}: ${pct}% used`} height={4} />
+              ) : (
+                <Text dimColor>{bar(l.percentUsed / 100, 24)}</Text>
+              )}
+              {Number.isFinite(resets) && resets > 0 ? (
+                <Text size="caption" dimColor>
+                  Resets in {fmtDuration(resets)}
+                </Text>
+              ) : null}
+            </Box>
+          )
+        })}
+      </Box>
+    ) : null
+
+    // ------------------------------------------------ cost per message
+    const shown = Math.min(40, view.rows.length)
+    const chart = Svg ? (
+      <Box key="chart" flexDirection="column" gap="xs">
+        {label('chart-label', 'Cost per message', `last ${shown}`)}
+        <Svg source={miniChartSvg(view.rows, W, 104)} alt={`Cost of the last ${shown} messages: your message and Claude's reply, stacked`} height={104} isInteractive />
+        <Box flexDirection="row" gap="sm">
+          <Text size="caption" color={YOU_COLOR}>
+            ■
+          </Text>
+          <Text size="caption" dimColor>
+            your message
+          </Text>
+          <Text size="caption" color={CLAUDE_COLOR}>
+            ■
+          </Text>
+          <Text size="caption" dimColor>
+            Claude's reply
+          </Text>
+          <Text size="caption" color="warning">
+            ▲
+          </Text>
+          <Text size="caption" dimColor>
+            cache lapsed
+          </Text>
+        </Box>
+      </Box>
+    ) : (
+      <Box key="spark" flexDirection="column" gap="xs">
+        {label('spark-label', 'Cost per message', `last ${Math.min(30, view.rows.length)}`)}
+        <Text dimColor>{sparkline(view.rows)}</Text>
+      </Box>
+    )
+
+    // ------------------------------------------------ messages
+    const stateChip = (r: MeterRow) => {
+      switch (r.cache) {
+        case 'cold':
+          return (
+            <Text size="caption" color="warning">
+              ▲ cold
+            </Text>
+          )
+        case 'partial':
+          return (
+            <Text size="caption" color="warning">
+              △ partial
+            </Text>
+          )
+        case 'warm':
+          return (
+            <Text size="caption" dimColor>
+              warm
+            </Text>
+          )
+        case 'reset':
+          return (
+            <Text size="caption" dimColor>
+              ↺ rebuilt
+            </Text>
+          )
+        case 'first':
+          return (
+            <Text size="caption" dimColor>
+              first
+            </Text>
+          )
+        default:
+          return null
+      }
+    }
+    const maxRow = Math.max(0.0001, ...rows.filter(r => r.origin !== 'background').map(r => r.total))
     const rowNodes = rows.map(row => {
-      const isOpen = expanded.has(row.id)
       if (row.origin === 'background') {
         return (
-          <Box key={row.id} flexDirection="column" marginTop={1}>
-            <Box flexDirection="row" justifyContent="space-between">
-              <Text dimColor>{clock(row.at)} · {row.prompt}</Text>
-              <Text tabular>{fmtUsd(row.total)}</Text>
+          <Box key={row.id} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" marginTop="lg">
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0}>
+              <Text size="caption" dimColor wrap="truncate-end">
+                {clock(row.at)} · {row.prompt}
+              </Text>
             </Box>
+            <Text size="caption" dimColor tabular>
+              {fmtUsd(row.total)}
+            </Text>
           </Box>
         )
       }
+      const isOpen = expanded.has(row.id)
       const cold = coldWords(row, ttl)
+      const origin = originLabel(row.origin).replace(/: $/, '')
+      const meta = [`#${row.n}`, clock(row.at), origin, row.open ? 'running' : row.live ? 'live' : ''].filter(Boolean).join(' · ')
+      const plan = limitWords(row)
       return (
-        <Box key={row.id} flexDirection="column" marginTop={1}>
-          <Box flexDirection="row" justifyContent="space-between">
-            <Box flexDirection="row" gap="sm">
-              <Text weight="semibold">#{row.n}</Text>
-              <Text dimColor>
-                {clock(row.at)}
-                {row.open ? ' · running' : ''}
-                {row.live && !row.open ? ' · live' : ''}
+        <Box key={row.id} flexDirection="column" gap="xs" marginTop="lg">
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0}>
+              <Text weight="medium" wrap="truncate-end">
+                {row.prompt || '(no text)'}
               </Text>
             </Box>
-            <Text weight="semibold" tabular>{row.estimated ? '≈' : ''}{fmtUsd(row.total)}</Text>
+            <Text weight="semibold" tabular>
+              {row.estimated ? '≈' : ''}
+              {fmtUsd(row.total)}
+            </Text>
           </Box>
-          <Text wrap="truncate-end">{originLabel(row.origin)}{row.prompt || '(no text)'}</Text>
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+            <Text size="caption" dimColor>
+              {meta}
+            </Text>
+            {stateChip(row)}
+          </Box>
+          {Svg ? <Svg source={splitBarSvg(row.you, row.claude, W, 6, row.total / maxRow)} alt={`You ${fmtUsd(row.you)}, Claude ${fmtUsd(row.claude)}`} height={6} /> : null}
           <Box flexDirection="row" gap="sm">
             <Text color={YOU_COLOR}>■</Text>
             <Text tabular>You {fmtUsd(row.you)}</Text>
-            <Text dimColor wrap="truncate-end">{youWords(row)}</Text>
+            <Text dimColor wrap="truncate-end">
+              {youWords(row)}
+            </Text>
           </Box>
           {cold ? <Text color="warning">{cold}</Text> : null}
           <Box flexDirection="row" gap="sm">
             <Text color={CLAUDE_COLOR}>■</Text>
-            <Text tabular>Claude {row.estimated ? '≈' : ''}{fmtUsd(row.claude)}</Text>
-            <Text dimColor wrap="truncate-end">{claudeWords(row)}</Text>
+            <Text tabular>
+              Claude {row.estimated ? '≈' : ''}
+              {fmtUsd(row.claude)}
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {claudeWords(row)}
+            </Text>
           </Box>
           {row.midTurn.map((m, i) => (
             <Text key={`mid-${i}`} color="warning">
@@ -997,25 +1174,26 @@ export const register: Register = on => {
             </Text>
           ))}
           {row.agentCold.count ? (
-            <Text dimColor>△ {row.agentCold.count} agent request{row.agentCold.count === 1 ? '' : 's'} found the agent's 5-minute cache lapsed: +{fmtUsd(row.agentCold.penalty)}</Text>
+            <Text dimColor>
+              △ {row.agentCold.count} agent request{row.agentCold.count === 1 ? '' : 's'} found the agent's 5-minute cache lapsed: +{fmtUsd(row.agentCold.penalty)}
+            </Text>
           ) : null}
-          {limitWords(row) ? <Text dimColor>{limitWords(row)}</Text> : null}
+          {plan ? (
+            <Text size="caption" dimColor>
+              {plan}
+            </Text>
+          ) : null}
           {row.detail && row.detail.length ? (
             <Button
               key={`toggle-${row.id}`}
               plain
               label={isOpen ? 'Hide requests' : `Show ${row.detail.length} request line${row.detail.length === 1 ? '' : 's'}`}
-              onPress={() =>
-                update($, UI, u => ({
-                  ...u,
-                  expanded: u.expanded.includes(row.id) ? u.expanded.filter(x => x !== row.id) : [...u.expanded, row.id].slice(-20),
-                }))
-              }
+              onPress={() => toggle(row.id)}
             />
           ) : null}
           {isOpen && row.detail
             ? row.detail.map((q, i) => (
-                <Text key={`d-${row.id}-${i}`} dimColor wrap="truncate-end">
+                <Text key={`d-${row.id}-${i}`} size="caption" dimColor wrap="truncate-end">
                   {detailWords(q)}
                 </Text>
               ))
@@ -1024,33 +1202,49 @@ export const register: Register = on => {
       )
     })
 
-    return (
-      <Box flexDirection="column">
-        {header}
-        {chartNode}
-        {chart ? (
-          <Box flexDirection="row" gap="sm" key="legend">
-            <Text color={YOU_COLOR}>■</Text>
-            <Text dimColor>your message</Text>
-            <Text color={CLAUDE_COLOR}>■</Text>
-            <Text dimColor>Claude's reply</Text>
-            <Text color="warning">▲</Text>
-            <Text dimColor>cache had lapsed</Text>
+    // ------------------------------------------------ notes
+    const hidden = view.hiddenRows + Math.max(0, view.rows.length - PANE_ROWS)
+    const about = expanded.has(ABOUT)
+    const notes = (
+      <Box key="foot" flexDirection="column" gap="xs" marginTop="lg">
+        {hidden > 0 ? (
+          <Text size="caption" dimColor>
+            {hidden} older messages not shown (the command-line report lists them all).
+          </Text>
+        ) : null}
+        {view.source === 'live' ? (
+          <Text size="caption" dimColor>
+            Counting live: the transcript has not been read yet.
+          </Text>
+        ) : null}
+        <Button key="usage-meter-about" plain label={about ? 'Hide notes' : 'About these numbers'} onPress={() => toggle(ABOUT)} />
+        {about ? (
+          <Box flexDirection="column" gap="xs">
+            <Text size="caption" dimColor>
+              You: what reading the conversation plus your new message cost. Claude: everything it did to answer, thinking, writing, tools, agents and the advisor.
+            </Text>
+            <Text size="caption" dimColor>
+              Dollars are API list-price equivalents for comparison; a subscription doesn't charge them. Plan limits are Claude Code's own readings for your whole account, so they include your other chats.
+            </Text>
+            {view.estimatedRequests ? (
+              <Text size="caption" dimColor>
+                ≈ {view.estimatedRequests} agent request{view.estimatedRequests === 1 ? '' : 's'} had incomplete output counts in the transcript: their output is estimated, likely low.
+              </Text>
+            ) : null}
           </Box>
         ) : null}
+      </Box>
+    )
+
+    return (
+      <Box flexDirection="column">
+        {session}
+        {cache}
+        {plan}
+        {chart}
+        {label('messages-label', 'Messages', 'newest first')}
         {rowNodes}
-        {view.hiddenRows + Math.max(0, view.rows.length - PANE_ROWS) > 0 ? (
-          <Text dimColor>{view.hiddenRows + Math.max(0, view.rows.length - PANE_ROWS)} older messages not shown (the CLI report lists them all).</Text>
-        ) : null}
-        <Box flexDirection="column" marginTop={1} key="foot">
-          <Text dimColor>
-            You = what reading the conversation plus your new message cost. Claude = everything it did to answer: thinking, writing, tools, agents, the advisor.
-          </Text>
-          <Text dimColor>
-            Dollars are API list-price equivalents for comparison; a subscription does not charge them. Plan points are the account's own readings and include your other sessions.
-          </Text>
-          {view.source === 'live' ? <Text dimColor>Counting live: the transcript has not been read yet.</Text> : null}
-        </Box>
+        {notes}
       </Box>
     )
   })
