@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+# HTML reports the CLI writes (npm run report -- --html ...)
+usage-report.html
+report.html
+# Type declarations Claude Code writes into a loaded plugin's folder
+**/.claude-plugin/types/

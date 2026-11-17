@@ -1,0 +1,14 @@
+{
+  "name": "claude-token-usage",
+  "description": "A per-message usage meter for Claude Code: your message versus Claude's reply, the prompt cache and your plan limits.",
+  "owner": {
+    "name": "NessDan"
+  },
+  "plugins": [
+    {
+      "name": "usage-meter",
+      "source": "./plugins/usage-meter",
+      "description": "Shows how much usage every message used: your message and Claude's reply, the prompt-cache countdown and idle penalties."
+    }
+  ]
+}

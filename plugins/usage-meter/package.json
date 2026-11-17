@@ -1,0 +1,6 @@
+{
+  "name": "usage-meter",
+  "private": true,
+  "type": "module",
+  "description": "Node side of the usage-meter mod: the CLI report and the transcript summarizer the mod runs for large sessions."
+}
