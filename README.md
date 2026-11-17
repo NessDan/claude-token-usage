@@ -88,7 +88,7 @@ So the same message can cost **20× to 80× more** than it would have an hour ea
 - **Claude** is everything Claude did to answer: thinking and writing, each tool round trip (every one re-sends the conversation), subagents and workflow agents, and the advisor.
 - **Dollars** are Anthropic's API list prices applied to the token counts the API reported. A subscription doesn't charge them; they're the best common scale for comparing messages, because Anthropic doesn't publish how tokens map to plan limits. A figure marked ≈ includes output that had to be estimated.
 - **The weekly share** ("+1% weekly") is how far Claude Code's own reading of your weekly limit moved while the message ran. It's account-wide, so anything else using your account at the time counts too, and it's coarse: the reading often moves in whole-percent steps, so a short message shows "<1%". It's only recorded while the mod is loaded.
-- **Cache states** for each message:
+- **Cache states** for each message, as the report's Cache column names them (the pane says the same in words, under **Details**):
 
   | State | Meaning |
   | --- | --- |

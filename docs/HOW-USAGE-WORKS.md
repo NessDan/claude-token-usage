@@ -138,7 +138,7 @@ That's why the meter shows **tokens** as the API reported them (except requests 
 
 **Outside the app:** [ccusage](https://github.com/ryoppippi/ccusage) (daily and session reports), [claude-code-log](https://github.com/daaain/claude-code-log) (per-message tokens in a browser page), and [cc-probeline](https://pkg.go.dev/github.com/labzink/cc-probeline) (a per-turn priced status line in the terminal).
 
-**What none of them does:** a per-message ledger in the desktop app that splits your message from Claude's reply, puts tokens, dollars and plan points on the same row, and pins the idle penalty to the message that paid it.
+**What none of them does:** a per-message ledger in the desktop app that splits your message from Claude's reply, puts each message's dollars and weekly-limit share on the same row with the tokens behind them, and pins the idle penalty to the message that paid it.
 
 ## 8. Habits that save usage (from the docs above)
 
