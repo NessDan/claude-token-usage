@@ -46,6 +46,6 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 
   Transcripts over 4 MB are summarized by `scripts/summarize.ts` through Node.
 - **Dollars are Anthropic API list prices.** A subscription doesn't charge them; they are for comparison.
-- **Plan points are Claude Code's own readings.** They're account-wide, so they include your other sessions running at the same time. When no reading had come in for a few minutes before a message, its change also covers that time, and the row says since when.
+- **The weekly share is Claude Code's own reading.** Each message shows how far your weekly limit moved while it ran. It's account-wide, so your other sessions running at the same time count too, and the reading moves in coarse steps, so a small message shows "<1%". When no reading had come in for a few minutes before a message, its change also covers that time, and its details say since when.
 
 The repository README and `docs/` explain the details.

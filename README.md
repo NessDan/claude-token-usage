@@ -2,14 +2,14 @@
 
 See how much usage **every message** uses in Claude Code: your message, and Claude's reply. It also shows the prompt cache, so you can see why coming back to an old conversation can eat a chunk of your limits, before you send.
 
-Claude Code's own `/usage` shows session totals, and the desktop app shows context and plan-limit rings. Neither breaks usage down by message. This does, with tokens, API-equivalent dollars, the cache state and your plan-limit readings on the same row.
+Claude Code's own `/usage` shows session totals, and the desktop app shows context and plan-limit rings. Neither breaks usage down by message. This does: each message's row shows what it cost in API-equivalent dollars and how far it moved your weekly limit, flags a lapsed cache, and opens to the tokens behind it.
 
 Two pieces:
 
 - **A mod for Claude Code** (desktop app and terminal): a pane beside the chat with one row per message, a one-line band above the prompt, a usage line under each reply, and a `/usage-meter` command.
 - **A command-line report** over the conversations already on your computer, as a terminal table or an HTML page.
 
-<p align="center"><img src="docs/images/usage-pane.png" width="400" alt="The usage meter's pane in the Claude desktop app: this chat's total split into your messages and Claude's replies, what lapsed caches cost, the cache countdown, the weekly plan limit with its reset time, and a chart of each message's cost"></p>
+<p align="center"><img src="docs/images/usage-pane.png" width="400" alt="The usage meter's pane in the Claude desktop app: this chat's total split into your messages and Claude's replies, what lapsed caches cost, the cache countdown, a chart of each message's cost, and the newest messages with what each cost and how far it moved the weekly limit"></p>
 
 ## Install
 
@@ -37,22 +37,16 @@ Built and tested on Claude Code 2.1.321. The one-line install needs 2.1.275 or l
 
 - **This chat**: the total, split into your messages and Claude's replies, and what lapsed caches cost.
 - **Cache**: how long the conversation stays cached, and what your next message costs to re-read it, or, once it has expired, to write it all again.
-- **Plan limits**: each limit Claude Code reports for your account, with a meter that turns amber at 80% and when it resets.
 - **Cost per message**: the last 40 messages, with ▲ where a cache had lapsed.
 - **Messages**, newest first:
 
 ```
 ok now build it                                       $5.29
-#12 · 8:41 PM                                        ▲ cold
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-■ You $1.89     cache had lapsed: re-wrote 236k
-▲ You were away 2h 13m, past the 1-hour cache: your message re-wrote 236k tokens, +$1.84 over a warm cache
-■ Claude $3.40  14 requests · 31 in 2 agents · 18k written
-Plan (all your sessions): Weekly +1%
-Show 16 request lines
+#12 · 8:41 PM   Details                         +1% weekly
+▲ Cache had lapsed, after 2h 13m away: +$1.84
 ```
 
-The bar under each message is blue for your message and orange for Claude's reply, its length scaled to the costliest message shown. A row that a background task or another session started is labelled with what started it. A lapse in the middle of a turn says why: a wait past the cache's lifetime, a model change, or a cache miss a few minutes in. "About these numbers" at the bottom explains the figures.
+Each message shows what it cost and how far it moved your weekly limit, side by side. A third line appears only when a cache had lapsed. **Details** opens the rest: what your message cost against Claude's reply, why the cache lapsed and how much it wrote again, and each request. A row that a background task or another session started is labelled with what started it. "About these numbers" at the bottom explains the figures.
 
 **The band above the prompt** depends on what's happening:
 
@@ -93,7 +87,7 @@ So the same message can cost **20× to 80× more** than it would have an hour ea
 - **You** is what your message cost before Claude did anything: reading the whole conversation plus your new text. That's cheap when the cache is warm, and expensive when it has lapsed.
 - **Claude** is everything Claude did to answer: thinking and writing, each tool round trip (every one re-sends the conversation), subagents and workflow agents, and the advisor.
 - **Dollars** are Anthropic's API list prices applied to the token counts the API reported. A subscription doesn't charge them; they're the best common scale for comparing messages, because Anthropic doesn't publish how tokens map to plan limits. A figure marked ≈ includes output that had to be estimated.
-- **Plan points** ("Weekly +1%") are Claude Code's own limit readings, taken when the message started and when it ended. They're account-wide, so they include anything else using your account at the time, and they're coarse: often whole-percent steps, so a short message usually shows +0%. They're only recorded while the mod is loaded.
+- **The weekly share** ("+1% weekly") is how far Claude Code's own reading of your weekly limit moved while the message ran. It's account-wide, so anything else using your account at the time counts too, and it's coarse: the reading often moves in whole-percent steps, so a short message shows "<1%". It's only recorded while the mod is loaded.
 - **Cache states** for each message:
 
   | State | Meaning |
