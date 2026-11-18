@@ -1466,8 +1466,10 @@ export const register: Register = on => {
               hover={{ scope: `bar-${s.row.id}`, backgroundColor: LIT }}
             >
               <Svg source={s.svg} alt={`#${s.row.n}: ${fmtUsd(s.row.total)}`} width={s.width} height={parts.height} />
-              {/* A row kept for the button, so showing it moves nothing. */}
-              <Box height={1} flexDirection="row" justifyContent="center">
+              {/* A row kept for the button, so showing it moves nothing: no width of its
+                  own, so a ↓ wider than a narrow column spills over both sides, centered,
+                  instead of widening the column and pushing the bars after it. */}
+              <Box height={1} width={0} overflow="visible" flexDirection="row" justifyContent="center">
                 <Box display="none" hover={{ display: 'flex' }}>
                   <Button key={`jump-${s.row.id}`} plain label="↓" onPress={() => void jump(s.row)} />
                 </Box>
