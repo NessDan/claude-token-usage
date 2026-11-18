@@ -186,6 +186,8 @@ function lastMainOfReq(r: Req | undefined): MeterLastMain | undefined {
   const out: MeterLastMain = { at: r.at, model: r.model, input: t.input, read: t.cacheRead, write: cacheWrites(t), output: t.output }
   if (r.fast) out.fast = true
   if (r.geo) out.geo = r.geo
+  // The cache's clock started when it was sent.
+  if (r.sentAt !== undefined) out.sentAt = r.sentAt
   return out
 }
 
@@ -195,6 +197,7 @@ export function reqOfLastMain(m: MeterLastMain | undefined, ttl: Ttl): Req | und
   return {
     key: `last@${m.at}`,
     at: m.at,
+    ...(m.sentAt !== undefined ? { sentAt: m.sentAt } : {}),
     model: m.model,
     kind: 'main',
     fast: m.fast,

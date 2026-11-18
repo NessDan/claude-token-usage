@@ -211,6 +211,21 @@ export type Req = {
    * with the original's history copied in, under the original's id.
    */
   session?: string
+  /**
+   * When the request was sent, where `at` is later. A cache entry's lifetime
+   * runs from the start of the request that writes or reads it, while a
+   * transcript's `at` is when the answer's first block was written: after the
+   * model began answering, up to minutes later after long thinking. Read from
+   * the api-request line Claude Code writes as it sends a request, else from
+   * the line the request answers (the prompt or the tool results). See
+   * `cacheClock`.
+   */
+  sentAt?: number
+}
+
+/** When a request's cache clock started: when it was sent, else when its answer began. */
+export function cacheClock(r: { at: number; sentAt?: number }): number {
+  return r.sentAt !== undefined && r.sentAt <= r.at ? r.sentAt : r.at
 }
 
 /** Dollars per web search, as the pricing page lists it. */
@@ -359,7 +374,8 @@ export function judgeRequest(r: Req | undefined, prev: Req | undefined, compacte
   const before = prev ? prev.lastPass ?? prev.tokens : undefined
   const read = cur.cacheRead
   if (!prev || !before) return { state: 'first', read, rewritten: 0, penaltyUsd: 0 }
-  const idleMs = Math.max(0, r.at - prev.at)
+  // The cache's clock: from when the previous request was sent to when this one was.
+  const idleMs = Math.max(0, cacheClock(r) - cacheClock(prev))
   const expected = promptTokens(before)
   if (compactedBetween) {
     return { state: 'reset', reason: 'compaction', idleMs, expected, read, rewritten: 0, penaltyUsd: 0 }
@@ -612,7 +628,8 @@ export function estimateNext(lastMain: Req | undefined, now: number, ttl: Ttl, p
   }
   // What the next request builds on: the last executor pass of the last request.
   const t = lastMain.lastPass ?? lastMain.tokens
-  const idleMs = Math.max(0, now - lastMain.at)
+  // The cache's lifetime runs from when the last request was sent, not from when its answer began.
+  const idleMs = Math.max(0, now - cacheClock(lastMain))
   if (compactedAt !== undefined && compactedAt > lastMain.at) {
     return { state: 'compacted', ttl, idleMs, msLeft: 0, contextTokens: 0, warmUsd: 0, coldUsd: 0, usd: 0, model: lastMain.model }
   }

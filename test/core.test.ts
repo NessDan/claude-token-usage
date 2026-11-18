@@ -403,6 +403,28 @@ describe('cache judgement and attribution', () => {
     assert.equal(s.penaltyUsd, 0)
   })
 
+  test('the cache clock starts when a request was sent, not when its answer began', () => {
+    const sent = (at: number) => JSON.stringify({ type: 'api-request', timestamp: iso(at), params: { model: 'claude-opus-5-5' } })
+    const t = parseTranscript(lines(
+      prompt(T0, 'think hard about it'),
+      sent(T0 + 100),
+      // Its first block written two minutes in, after long thinking.
+      reply(T0 + 2 * MIN, 'a', { read: 200_000, w1h: 2_000, out: 3_000 }),
+      prompt(T0 + 10 * MIN, 'and then'),
+      // No api-request line (an older build): the prompt it answers.
+      reply(T0 + 10 * MIN + 30_000, 'b', { read: 202_000, w1h: 1_000, out: 500 }),
+      // Nothing it answers since the last request: its own time.
+      reply(T0 + 11 * MIN, 'c', { read: 203_000, w1h: 500, out: 200 }),
+    ))
+    const [a, b] = t.exchanges.map(e => e.reqs[0]!)
+    assert.equal(a!.sentAt, T0 + 100)
+    assert.equal(b!.sentAt, T0 + 10 * MIN)
+    assert.equal(t.exchanges[1]!.reqs[1]!.sentAt, undefined)
+    // 59 minutes after the request was sent the 1-hour cache has a minute left, not a minute and a half.
+    const est = estimateNext(b, T0 + 69 * MIN, '1h', priceFor)
+    assert.equal(est.msLeft, MIN)
+  })
+
   test('a wait inside a turn (a pending question) that outlasts the cache is flagged mid-turn', () => {
     const t = parseTranscript(lines(
       prompt(T0, 'do it'),

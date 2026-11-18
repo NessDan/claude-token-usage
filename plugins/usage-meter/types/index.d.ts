@@ -91,6 +91,8 @@ export type MeterTotals = {
 /** The last main-thread request: what the next message re-sends, and since when the cache has been idle. */
 export type MeterLastMain = {
   at: number
+  /** When it was sent: the cache's lifetime runs from there (lib/usage.ts's cacheClock); older views lack it. */
+  sentAt?: number
   model: string
   input: number
   read: number

@@ -1,6 +1,6 @@
 {
   "name": "claude-token-usage",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Per-message usage meter for Claude Code: a desktop-app mod (pane + band) and a CLI report over the transcripts.",
   "license": "MIT",

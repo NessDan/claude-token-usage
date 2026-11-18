@@ -42,7 +42,7 @@ Built and tested on Claude Code 2.1.325. The one-line install needs 2.1.275 or l
 
 - **This chat**: the total, split into your messages and Claude's replies, and what lapsed caches cost.
 - **Weekly limit**: this chat's share of your weekly limit since the last reset, beside how much your account has used in all and when it resets. Once the meter can estimate it, the bar splits your week by chat, a color each: this chat, each other chat on this computer that runs the meter (by its title), and **Unknown** in gray, what none of them accounts for (claude.ai, your phone, other computers), each listed under the bar with its share. Until then the section shows how far the weekly reading moved while this chat worked, which is rough because other chats running at the same time count too, and lists each chat's API-equivalent dollars this week.
-- **Cache**: how long the conversation stays cached, and what your next message costs to re-read it, or, once it has expired, to write it all again.
+- **Cache**: how long the conversation stays cached, and what your next message costs to re-read it, or, once it has expired, to write it all again. The countdown runs from when your last request was sent, as the cache's own lifetime does, so the time Claude spends answering counts too.
 - **Cost per message**: the last 40 messages, with ▲ where a cache had lapsed. In the desktop app, hovering a bar shows its message's number, cost and first words beside the section's title, and a ↓ under the bar; clicking ↓ scrolls the pane to that message, which stays highlighted for a few seconds.
 - **Messages**, newest first:
 

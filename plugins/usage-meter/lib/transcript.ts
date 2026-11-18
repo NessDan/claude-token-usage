@@ -312,6 +312,9 @@ function mergeInto(map: Map<string, Draft>, r: Req, complete: boolean, chars: nu
   const next: Draft = r.tokens.output >= had.output ? { req: { ...r, at }, output: r.tokens.output, complete: had.complete || complete, chars: had.chars + chars } : { ...had, req: { ...had.req, at }, complete: had.complete || complete, chars: had.chars + chars }
   // The response's first line is the one written right after a compaction: keep its mark.
   if (had.req.afterCompaction || r.afterCompaction) next.req = { ...next.req, afterCompaction: true }
+  // And when it was sent, as its first line had it.
+  const sentAt = had.req.sentAt ?? r.sentAt
+  if (sentAt !== undefined) next.req = { ...next.req, sentAt }
   map.set(r.key, next)
   return true
 }
@@ -417,6 +420,13 @@ export function createTranscriptParser(): TranscriptParser {
   /** The stop reason of the main thread's last request: "tool_use" while a turn runs. */
   let lastMainStop: string | undefined
   let lastAt: number | undefined
+  /**
+   * When the main thread's next request was sent: the api-request line Claude
+   * Code writes as it sends one (with its model), else the last line it answers
+   * (the prompt, or the tool results), written a moment before it is sent.
+   */
+  let sending: { at: number; model: string | undefined } | undefined
+  let lastInputAt: number | undefined
   let badLines = 0
   let mergedLines = 0
   let skippedLines = 0
@@ -483,6 +493,7 @@ export function createTranscriptParser(): TranscriptParser {
       case 'api-request': {
         const t = ttlOfApiRequest(o)
         if (t) ttl = t
+        if (at !== undefined && o.isSidechain !== true) sending = { at, model: str(asObj(o.params)?.model) }
         return
       }
       case 'system': {
@@ -493,6 +504,7 @@ export function createTranscriptParser(): TranscriptParser {
         return
       }
       case 'user': {
+        if (at !== undefined && o.isSidechain !== true) lastInputAt = at
         if (o.isCompactSummary === true) {
           compactedSince = true
           compactAt = compactAt ?? at ?? lastAt
@@ -529,6 +541,11 @@ export function createTranscriptParser(): TranscriptParser {
             return
           }
           if (r.kind === 'main') {
+            // When it was sent: its api-request line, else the line it answers.
+            if (at !== undefined) {
+              const sent = sending && sending.at <= at && (!sending.model || sending.model === r.model) ? sending.at : lastInputAt !== undefined && lastInputAt <= at ? lastInputAt : undefined
+              if (sent !== undefined) r.sentAt = sent
+            }
             // An auto-compaction runs after the prompt arrives and before its first
             // request: it belongs to the exchange whose first request follows it.
             if (current && !current.hasMain && compactedSince) current.compactedBefore = true
@@ -542,6 +559,11 @@ export function createTranscriptParser(): TranscriptParser {
           }
           if (mergeInto(current ? current.reqs : preamble, r, complete, chars)) mergedLines += 1
         })
+        // The api-request line and the line answered belonged to this response; the next writes its own.
+        if (!sidechain && got.reqs.some(r => r.kind === 'main')) {
+          sending = undefined
+          lastInputAt = undefined
+        }
         return
       }
       default:

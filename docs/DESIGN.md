@@ -50,6 +50,8 @@ Prompt-less usage gets its own **background** rows. Today that means the compact
 
 ## Cold caches
 
+The cache's clock (`cacheClock`) runs from when a request was **sent**, as the cache's own lifetime does: the api-request line Claude Code writes as it sends one, else the line the request answers (the prompt or the tool results, written a fraction of a second before). A transcript's own time for a request is when its answer's first block was written: in this project's history, a median 4 s later and up to 2 minutes after long thinking. The cache countdown, and the idle time between two requests, use the send time where there is one.
+
 Each request is judged against the previous request of its **thread**: the main conversation, or one agent's own chain. A warm request reads from the cache what the previous request sent. So:
 
 - `expected` = the previous request's prompt size;
@@ -202,7 +204,7 @@ A mix of models or caching unlike the calibration's can shift it either way. The
 
 ## Tested
 
-- `test/core.test.ts`: 57 unit tests on synthetic transcripts (`npm test`). The weekly share's include five chats at once against one chat spending the same (the same rate) and against one chat counting its own spend (five times too high), too few points, an idle gap with use elsewhere, a step seen too late to anchor, a weekly reset, a fork's copied history, the advisor's own run, and live requests the transcript doesn't hold yet.
+- `test/core.test.ts`: 58 unit tests on synthetic transcripts (`npm test`). The weekly share's include five chats at once against one chat spending the same (the same rate) and against one chat counting its own spend (five times too high), too few points, an idle gap with use elsewhere, a step seen too late to anchor, a weekly reset, a fork's copied history, the advisor's own run, and live requests the transcript doesn't hold yet.
 - `plugins/usage-meter/tests/meter.test.tsx`: 17 tests in the engine's own test kit (`claude plugin test`). They drive live turns and check the pane, the band and the line under each answer, on desktop and terminal, including a turn a background task started, an agent that keeps working after its message was read, and an agent a later message resumes. For the weekly share, the store is seeded with five chats' ledger entries, this one among them. The tests check the estimate beside the row's cost, in the weekly limit section (this chat's spend this week, stored and live) and under the answer; what the notes say it's based on; this chat's entry keeping what it stored before the load; the measured change shown while calibrating; a step written at once; and a chat off a subscription writing nothing.
 - `claude plugin validate` and a strict `tsc` against the build's own declarations.
 - Real headless runs of Claude Code 2.1.321 with the mod loaded, checked in the debug log:
