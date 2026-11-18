@@ -225,6 +225,8 @@ export type MeterUi = {
   notesHidden: boolean
   /** The message just jumped to from the chart, by row id: its column and row stay lit for a few seconds. */
   flash?: string
+  /** The pane shows sample data (lib/demo.ts) instead of this chat's: `/usage-meter demo` turns it on and off. */
+  demo?: boolean
 }
 
 declare module 'claude-code' {

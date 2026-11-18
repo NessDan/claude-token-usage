@@ -68,6 +68,7 @@ Usage: you $0.31 (read 236k from cache) · Claude $1.10 (14 requests · 18k writ
 | `/usage-meter` | opens the pane, and shows the band if it was hidden |
 | `/usage-meter hide`, `/usage-meter show` | hides or shows the band in that chat (the band's Hide button does the same and says how to get it back) |
 | `/usage-meter notes-off`, `/usage-meter notes-on` | turns the line under each reply off or on |
+| `/usage-meter demo` | fills the pane with sample data, to see all of it (the weekly split by chat included) before your own data gets there; again to go back |
 
 ## Why one message can cost so much more than another
 

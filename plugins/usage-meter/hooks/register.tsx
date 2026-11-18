@@ -49,6 +49,7 @@ import { modelLabel, priceFor } from '../lib/pricing.ts'
 import { agentIdFromPath, appEventOf, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
 import { bar, estimateNext, fmtDuration, fmtPoints, fmtTokens, fmtUsd, limitDeltas, limitLabel, preview, ttlMs } from '../lib/usage.ts'
+import { demoPane } from '../lib/demo.ts'
 import { buildTranscriptView, chatSpend, isCovered, reqOfLastMain, withLive } from '../lib/view.ts'
 import type { ChatLedger, SeenRun, SpendSeries } from '../lib/weekly.ts'
 import {
@@ -969,7 +970,7 @@ export const register: Register = on => {
       await $.command.register({
         name: 'usage-meter',
         description: 'Show how much usage each message used (opens a pane beside the chat)',
-        argumentHint: '[show | hide | notes-off | notes-on]',
+        argumentHint: '[show | hide | notes-off | notes-on | demo]',
       })
     } catch {
       // a second registration after a reload is refused; the first stands
@@ -1234,6 +1235,16 @@ export const register: Register = on => {
 
   on('command.run', { command: 'usage-meter' }, async ($, e) => {
     const arg = String(e.args ?? '').trim().toLowerCase()
+    if (arg === 'demo') {
+      // Sample data in the pane, to see it whole before this chat's own data gets there.
+      const turnOn = !(await read($, UI)).demo
+      await update($, UI, u => {
+        const { demo: _, ...rest } = u
+        return turnOn ? { ...rest, demo: true } : rest
+      })
+      await $.ui.open({ id: PANE, title: TITLE })
+      return { text: turnOn ? 'The pane shows sample data. Type /usage-meter demo again to see this chat.' : "The pane shows this chat's usage again." }
+    }
     if (arg === 'notes-off' || arg === 'notes-on') {
       await update($, UI, u => ({ ...u, notesHidden: arg === 'notes-off' }))
       return { text: arg === 'notes-off' ? 'Usage lines under replies turned off.' : 'Usage lines under replies turned on.' }
@@ -1254,13 +1265,15 @@ export const register: Register = on => {
   // ---------------------------------------------------------------- the pane
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const view = await read($, VIEW)
     const ui = await read($, UI)
-    const calib = await read($, WEEKLY)
-    const measure = await read($, MEASURE)
     const live = await read($, LIVE)
     await read($, TICK)
     const now = await $.clock.now()
+    // `/usage-meter demo`: sample data in place of this chat's, said so at the top.
+    const demo = ui.demo ? demoPane(now) : undefined
+    const view = demo ? demo.view : await read($, VIEW)
+    const calib = demo ? demo.calib : await read($, WEEKLY)
+    const measure = demo ? demo.measure : await read($, MEASURE)
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     // Graphics where the surface draws SVG; the terminal gets text.
@@ -1338,20 +1351,20 @@ export const register: Register = on => {
 
     // ------------------------------------------------ the weekly limit
     // Only in a chat on a plan: one with a weekly reading of its own, now or earlier.
-    const onPlan = !!measure?.rateLimits.some(l => l.kind === 'seven_day') || ownSeen.length > 0
+    const onPlan = !!demo || !!measure?.rateLimits.some(l => l.kind === 'seven_day') || ownSeen.length > 0
     const wk = onPlan ? weekWindow(measure, calib, now) : undefined
     let weekly = null
     if (wk) {
       const rate = calib && calib.ready && calib.pointsPerUsd > 0 ? calib.pointsPerUsd : undefined
       // This chat's own spend since the week began (a fork's copied history left out).
       // (Up to Infinity: the minute running now counts whole, not the part of it gone by.)
-      const ownUsd = spendBetween(chatSeries(live, ttl, now), wk.start, Infinity)
+      const ownUsd = demo ? demo.ownUsd : spendBetween(chatSeries(live, ttl, now), wk.start, Infinity)
       const share = rate === undefined ? undefined : ownUsd * rate
       // Until then, the account-wide change measured around this chat's messages: never drawn as its slice.
       const measured = share === undefined ? measuredWeek(view.rows, wk.start) : undefined
       // The other chats here, as the last calibration read their ledgers, for this same week
       // (its start read from another reading can differ by seconds: within an hour is the same window).
-      const ownKey = await ledgerKey($)
+      const ownKey = demo ? demo.ownKey : await ledgerKey($)
       const sameWeek = !!calib?.week && Math.abs(calib.week.start - wk.start) <= 3_600_000
       const others = sameWeek ? calib!.week!.chats.filter(c => c.id !== ownKey && c.usd >= 0.005) : []
       // Up to four other chats by name (the biggest), else three and the rest together. Each
@@ -1795,6 +1808,16 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {demo ? (
+          <Box key="demo" flexDirection="row" gap="sm" marginBottom="sm">
+            <Text size="caption" weight="medium" color="suggestion">
+              Sample data
+            </Text>
+            <Text size="caption" dimColor>
+              /usage-meter demo shows this chat again
+            </Text>
+          </Box>
+        ) : null}
         {session}
         {weekly}
         {cache}

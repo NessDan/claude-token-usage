@@ -571,6 +571,28 @@ test('a chat off a subscription adds nothing: its spend does not count against t
   expect([...store.keys()].length).toBe(4)
 })
 
+test('/usage-meter demo fills the pane with sample data, says so, and goes back', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  engine(on, [WARM], [[]])
+  on('command.register', () => ({ value: { command: 'usage-meter' } }))
+  await $.command.run({ command: 'usage-meter', args: 'demo' } as never)
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Sample data$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Why did that one cost so much\?$/ })).toBeDefined()
+  // The weekly split, calibrated: this chat's $248 at 0.1 points a dollar, three
+  // other chats by name, and what none of them accounts for of the 62% used.
+  expect(await ui.find({ type: 'Text', text: /^≈25%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Fix the flaky parser test$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^≈13%$/ })).toBeDefined()
+  await ui.unmount()
+  await $.command.run({ command: 'usage-meter', args: 'demo' } as never)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Sample data$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Waiting for the first message/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('an empty session draws a waiting note', async ($, on) => {
   mock.clock(on, { now: 1_000 })
   engine(on, [WARM], [[]])
