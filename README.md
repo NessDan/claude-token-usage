@@ -30,7 +30,11 @@ claude plugin install usage-meter --marketplace NessDan/claude-token-usage
 
 In the desktop app, where `/plugin` doesn't run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `NessDan/claude-token-usage`, then **Add plugin**. A chat that was already open picks the meter up with `/reload-plugins`; new chats load it on their own.
 
-Built and tested on Claude Code 2.1.321. The one-line install needs 2.1.275 or later. The command-line report needs Node 22.18 or later.
+Already installed? From a shell, `claude plugin update usage-meter@claude-token-usage`, then `/reload-plugins` in each open chat.
+
+Then open the pane with `/usage-meter`. To see all of it before your own data gets there, `/usage-meter demo` fills it with sample data, and the same command goes back.
+
+Built and tested on Claude Code 2.1.325. The one-line install needs 2.1.275 or later. The command-line report needs Node 22.18 or later.
 
 ## What it shows
 
@@ -134,7 +138,7 @@ npm run stats
 
 - **Compaction's summary request isn't written to the transcript.** The mod records it live and shows it as its own row; the command-line report can't see it.
 - **Older agent transcripts** (Claude Code 2.1.219 to 2.1.293) recorded only part of each agent request's output. Those outputs are estimated from the text the agent wrote and marked ≈. Thinking isn't in the file, so the estimate runs low.
-- **Per-model weekly limits** (a separate Fable weekly bucket, say) show in Claude Code's `/usage`, but Claude Code 2.1.321 doesn't pass them to plugins. So the meter shows only the 5-hour and overall weekly windows, and estimates shares of the overall weekly one.
+- **Per-model weekly limits** (a separate Fable weekly bucket, say) show in Claude Code's `/usage`, but Claude Code 2.1.325 doesn't pass them to plugins. So the meter shows only the 5-hour and overall weekly windows, and estimates shares of the overall weekly one.
 - **The weekly share is an estimate.** It runs high while something the meter can't see uses your account at the same time as the chats here (see [Reading the numbers](#reading-the-numbers)). It's also only as good as its assumption that your plan counts usage in proportion to API prices.
 - **Prices are list prices as of November 2026** ([plugins/usage-meter/lib/pricing.ts](plugins/usage-meter/lib/pricing.ts)). A model missing from the table is priced as Opus 5.5, and its name says so wherever it's shown.
 - **Very large sessions need Node.** The mod reads transcripts over 4 MB through Node.

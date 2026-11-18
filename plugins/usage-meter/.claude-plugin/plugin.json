@@ -1,6 +1,6 @@
 {
   "name": "usage-meter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shows how much usage every message used: your message and Claude's reply, in tokens, API-equivalent dollars and plan-limit points, with the cache countdown and idle penalties.",
   "author": {
     "name": "NessDan"
