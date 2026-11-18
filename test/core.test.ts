@@ -34,6 +34,7 @@ import {
   fmtShare,
   noteReading,
   spendBetween,
+  weekByChat,
 } from '../plugins/usage-meter/lib/weekly.ts'
 
 // ---------------------------------------------------------------- builders
@@ -900,6 +901,21 @@ describe('the weekly share estimate', () => {
     // An estimate takes its mark, except a bound.
     assert.equal(fmtEstimate(0.123), '≈0.12%')
     assert.equal(fmtEstimate(0.004), '<0.01%')
+  })
+
+  test("a ledger entry keeps its chat's title; each chat's dollars this week come out biggest first", () => {
+    const e = encodeEntry({ at: T0, spend: [[T0 / MIN, 1]], seen: [], title: '  Fix   the parser\n tests ' })
+    assert.equal(e.title, 'Fix the parser tests')
+    assert.equal(decodeEntry('k', e)?.title, 'Fix the parser tests')
+    // An entry an older meter wrote has none.
+    assert.equal(decodeEntry('k', { v: 1, at: T0, spend: '', seen: '' })?.title, undefined)
+    const a: ChatLedger = { id: 'a', at: T0, spend: [[T0 / MIN - 10, 1], [T0 / MIN + 1, 2]], seen: [], title: 'A' }
+    const b: ChatLedger = { id: 'b', at: T0, spend: [[T0 / MIN + 2, 5]], seen: [] }
+    const c: ChatLedger = { id: 'c', at: T0, spend: [[T0 / MIN - 30, 9]], seen: [] }
+    assert.deepEqual(weekByChat([a, b, c], T0), [
+      { id: 'b', usd: 5, from: T0 + 2 * MIN },
+      { id: 'a', title: 'A', usd: 2, from: T0 + MIN },
+    ])
   })
 
   test('the calibration keeps the newest reading any chat saw, for the pane to read the week from', () => {

@@ -29,7 +29,23 @@ import type {
   MeterView,
   WeeklyState,
 } from '../types/index.d.ts'
-import { chartSlots, CLAUDE_COLOR, isColdRow, meterSvg, miniChartSvg, NEUTRAL_COLOR, sparkline, splitBarSvg, weekMeterSvg, YOU_COLOR } from '../lib/chart.ts'
+import type { MeterPart } from '../lib/chart.ts'
+import {
+  chartSlots,
+  CLAUDE_COLOR,
+  isColdRow,
+  meterSvg,
+  miniChartSvg,
+  MORE_CHATS_FILL,
+  NEUTRAL_COLOR,
+  OTHER_CHAT_FILLS,
+  sparkline,
+  splitBarSvg,
+  stackedMeterSvg,
+  UNKNOWN_FILL,
+  USED_FILL,
+  YOU_COLOR,
+} from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
 import { agentIdFromPath, appEventOf, cleanPrompt, createTranscriptParser, forEachLine, runIdFromPath } from '../lib/transcript.ts'
 import type { LimitReading, Ttl } from '../lib/usage.ts'
@@ -42,6 +58,7 @@ import {
   encodeEntry,
   estimatedShare,
   fmtEstimate,
+  fmtShare,
   KEEP_MS,
   LEDGER_PREFIX,
   MIN_POINTS,
@@ -50,6 +67,7 @@ import {
   pruneLedger,
   SETTLE_MS,
   spendBetween,
+  weekByChat,
 } from '../lib/weekly.ts'
 
 const PANE = 'usage-meter'
@@ -117,6 +135,8 @@ let ownSeen: SeenRun[] = []
 /** The key whose stored entry has been folded in, and the spend that entry held. */
 let ownLoadedKey: string | undefined
 let ownStoredSpend: SpendSeries = []
+/** What this chat is called, for the other chats' split by chat: its session title as the engine last gave it. */
+let ownTitle: string | undefined
 /** Something new to write; a write is already waiting on its timer. */
 let ledgerDirty = false
 let ledgerTimer = false
@@ -377,7 +397,7 @@ type WeekWindow = { start: number; resets: number; pct?: number; at: number }
  * or a later one another chat here saw (the calibration keeps it). A reading
  * whose window has since reset says only when the new week began.
  */
-function weekWindow(measure: MeasureState | null, calib: WeeklyState | null, now: number): WeekWindow | undefined {
+function weekWindow(measure: MeasureState | null, calib: { latest?: { pct: number; resets: number; at: number } } | null, now: number): WeekWindow | undefined {
   const seen: { pct: number; resets: number; at: number }[] = []
   const own = measure?.rateLimits.find(l => l.kind === 'seven_day')
   const resets = own?.resetsAt ? Date.parse(own.resetsAt) : NaN
@@ -811,6 +831,7 @@ async function loadOwn($: EngineInterface, key: string): Promise<boolean> {
     ownLoadedKey = key
     ownStoredSpend = stored?.spend ?? []
     if (stored) ownSeen = [...stored.seen, ...ownSeen].sort((a, b) => a.first - b.first)
+    if (stored?.title && !ownTitle) ownTitle = stored.title
   }
   return true
 }
@@ -833,7 +854,11 @@ function chatSeries(live: LiveState, ttl: Ttl, now: number): SpendSeries {
 async function ownLedger($: EngineInterface, key: string, now: number): Promise<ChatLedger> {
   const live = await read($, LIVE)
   const ttl = base?.ttl ?? ttlFallback(await read($, MEASURE))
-  return pruneLedger({ id: key, at: now, spend: chatSeries(live, ttl, now), seen: ownSeen }, now)
+  const ledger: ChatLedger = { id: key, at: now, spend: chatSeries(live, ttl, now), seen: ownSeen }
+  // Its session title, else its first message: how the other chats name it.
+  const title = ownTitle ?? (await read($, VIEW))?.rows.find(r => r.origin !== 'background' && r.prompt)?.prompt
+  if (title) ledger.title = title
+  return pruneLedger(ledger, now)
 }
 
 /**
@@ -852,6 +877,14 @@ async function writeLedger($: EngineInterface): Promise<void> {
   } catch (err) {
     dbg($, `weekly ledger not written: ${(err as Error).message}`)
   }
+}
+
+/** The chat's title, when the engine gives one: kept for this chat's ledger entry, which is written again when it changes. */
+function noteTitle($: EngineInterface, raw: string | undefined): void {
+  const title = raw?.replace(/\s+/g, ' ').trim()
+  if (!title || title === ownTitle) return
+  ownTitle = title
+  ledgerChanged($)
 }
 
 /** This chat's ledger has something new: it is written within LEDGER_WRITE_MS. */
@@ -916,8 +949,11 @@ async function recalibrate($: EngineInterface, force = false): Promise<void> {
     // Off a subscription this chat's spend is not the plan's.
     if (key && ownLoaded && ownSeen.length) chats.push(await ownLedger($, key, now))
     const cal = calibrate(chats, now)
+    // What each chat here spent this week, for the weekly section's split by chat.
+    const wk = weekWindow(await read($, MEASURE), cal, now)
+    const week = wk ? { start: wk.start, chats: weekByChat(chats, wk.start) } : undefined
     dbg($, `weekly calibration: ${cal.points} points over $${cal.usd.toFixed(2)} from ${cal.chats} of ${chats.length} chats${cal.ready ? `, 1% per $${(1 / cal.pointsPerUsd).toFixed(2)}` : ', not ready'}`)
-    await update($, WEEKLY, () => ({ ...cal, minPoints: MIN_POINTS, at: now }))
+    await update($, WEEKLY, () => (week ? { ...cal, minPoints: MIN_POINTS, at: now, week } : { ...cal, minPoints: MIN_POINTS, at: now }))
   } catch (err) {
     dbg($, `weekly calibration failed: ${(err as Error).message}`)
   } finally {
@@ -960,9 +996,13 @@ export const register: Register = on => {
   })
 
   // The transcript's path reaches a mod only on the settings-hook events.
+  // The settings hooks' events carry the transcript's path and, at a session's
+  // start and with each prompt, the chat's title: how the other chats' weekly
+  // split names this one.
   on('classic.SessionStart', async ($, e, next) => {
     try {
       await notePath($, e.transcript_path, e.session_id)
+      noteTitle($, e.session_title)
     } catch {
       // never stand in the session's way
     }
@@ -972,6 +1012,7 @@ export const register: Register = on => {
   on('classic.UserPromptSubmit', async ($, e, next) => {
     try {
       await notePath($, e.transcript_path, e.session_id)
+      noteTitle($, e.session_title)
     } catch {
       // never stand in the prompt's way
     }
@@ -1303,15 +1344,40 @@ export const register: Register = on => {
     let weekly = null
     if (wk) {
       const rate = calib && calib.ready && calib.pointsPerUsd > 0 ? calib.pointsPerUsd : undefined
-      // This chat's own spend since the week began (a fork's copied history left out), as a share of the limit.
+      // This chat's own spend since the week began (a fork's copied history left out).
       // (Up to Infinity: the minute running now counts whole, not the part of it gone by.)
-      const share = rate === undefined ? undefined : spendBetween(chatSeries(live, ttl, now), wk.start, Infinity) * rate
+      const ownUsd = spendBetween(chatSeries(live, ttl, now), wk.start, Infinity)
+      const share = rate === undefined ? undefined : ownUsd * rate
       // Until then, the account-wide change measured around this chat's messages: never drawn as its slice.
       const measured = share === undefined ? measuredWeek(view.rows, wk.start) : undefined
-      const weekRows = view.rows.filter(r => r.at >= wk.start)
-      const youUsd = weekRows.reduce((s, r) => s + r.you, 0)
-      const claudeUsd = weekRows.reduce((s, r) => s + r.claude, 0)
-      const youPart = share !== undefined && youUsd + claudeUsd > 0 ? share * (youUsd / (youUsd + claudeUsd)) : 0
+      // The other chats here, as the last calibration read their ledgers, for this same week.
+      const ownKey = await ledgerKey($)
+      const others = calib?.week && calib.week.start === wk.start ? calib.week.chats.filter(c => c.id !== ownKey && c.usd >= 0.005) : []
+      const named = others.length > 4 ? others.slice(0, 3) : others
+      const rest = others.slice(named.length)
+      const restUsd = rest.reduce((s, c) => s + c.usd, 0)
+      // What the reading moved that no chat here accounts for: claude.ai, the phone, another computer...
+      const unknown = rate !== undefined && share !== undefined && wk.pct !== undefined ? Math.max(0, wk.pct - share - others.reduce((s, c) => s + c.usd * rate, 0)) : undefined
+      // The bar: by chat once the rate is ready, else the account's use alone.
+      const parts: MeterPart[] = []
+      if (rate !== undefined && share !== undefined) {
+        parts.push({ frac: share / 100, fill: CLAUDE_COLOR })
+        named.forEach((c, i) => parts.push({ frac: (c.usd * rate) / 100, fill: OTHER_CHAT_FILLS[i] ?? MORE_CHATS_FILL }))
+        if (rest.length) parts.push({ frac: (restUsd * rate) / 100, fill: MORE_CHATS_FILL })
+        if (unknown) parts.push({ frac: unknown / 100, fill: UNKNOWN_FILL, hatch: true })
+      } else if (wk.pct !== undefined) {
+        parts.push({ frac: wk.pct / 100, fill: USED_FILL })
+      }
+      // Its list: each chat's share (or, until the rate is ready, its dollars this week), in the bar's order.
+      const amount = (usd: number) => (rate === undefined ? fmtUsd(usd) : usd * rate > 0 ? fmtEstimate(usd * rate) : '0%')
+      const chatName = (c: { title?: string; from?: number }) => c.title ?? (c.from ? `A chat from ${dayClock(c.from, now)}` : 'Another chat')
+      const lines: { key: string; glyph: string; color: string; name: string; value: string; strong?: boolean }[] = []
+      if (others.length || unknown) {
+        lines.push({ key: 'own', glyph: '■', color: rate === undefined ? USED_FILL : CLAUDE_COLOR, name: 'This chat', value: amount(ownUsd), strong: true })
+        named.forEach((c, i) => lines.push({ key: c.id, glyph: '■', color: rate === undefined ? USED_FILL : (OTHER_CHAT_FILLS[i] ?? MORE_CHATS_FILL), name: chatName(c), value: amount(c.usd) }))
+        if (rest.length) lines.push({ key: 'more', glyph: '■', color: rate === undefined ? USED_FILL : MORE_CHATS_FILL, name: `${rest.length} more chats`, value: amount(restUsd) })
+        if (unknown) lines.push({ key: 'unknown', glyph: '▨', color: UNKNOWN_FILL, name: 'Unknown: claude.ai, your phone, other computers', value: `≈${fmtShare(unknown)}` })
+      }
       const head =
         share !== undefined
           ? share > 0
@@ -1358,13 +1424,43 @@ export const register: Register = on => {
           </Box>
           {Svg ? (
             <Svg
-              source={weekMeterSvg(youPart / 100, ((share ?? 0) - youPart) / 100, wk.pct === undefined ? undefined : wk.pct / 100, W, 8)}
-              alt={`Weekly limit: ${wk.pct === undefined ? 'no reading this week yet' : `${fmtPct(wk.pct)} used`}${share !== undefined ? `, this chat ${head}` : ''}`}
+              source={stackedMeterSvg(parts, W, 8)}
+              alt={`Weekly limit: ${wk.pct === undefined ? 'no reading this week yet' : `${fmtPct(wk.pct)} used`}${lines.length ? `; ${lines.map(l => `${l.name} ${l.value}`).join(', ')}` : share !== undefined ? `, this chat ${head}` : ''}`}
               height={8}
             />
           ) : (
             <Text dimColor>{bar((wk.pct ?? 0) / 100, 24)}</Text>
           )}
+          {lines.length ? (
+            <Box flexDirection="column">
+              {rate === undefined ? (
+                <Text size="caption" dimColor>
+                  This week by chat, in API-equivalent dollars:
+                </Text>
+              ) : null}
+              {lines.map(l => (
+                <Box key={`wk-${l.key}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
+                  <Box flexDirection="row" alignItems="center" gap="sm" flexShrink={1} minWidth={0}>
+                    <Text size="caption" color={l.color}>
+                      {l.glyph}
+                    </Text>
+                    {l.strong ? (
+                      <Text size="caption" wrap="truncate-end">
+                        {l.name}
+                      </Text>
+                    ) : (
+                      <Text size="caption" dimColor wrap="truncate-end">
+                        {l.name}
+                      </Text>
+                    )}
+                  </Box>
+                  <Text size="caption" tabular>
+                    {l.value}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
+          ) : null}
           {caption ? (
             <Text size="caption" dimColor>
               {caption}
@@ -1675,6 +1771,9 @@ export const register: Register = on => {
             </Text>
             <Text size="caption" dimColor>
               The estimate runs high while something the meter can't see uses your account: claude.ai, the phone, another computer, or a chat here that hasn't loaded this version of the meter (run /reload-plugins there). Each message's measured change is in its details.
+            </Text>
+            <Text size="caption" dimColor>
+              Weekly limit splits your week by chat: this one, each other chat on this computer that runs the meter (by its title), and Unknown, what the reading moved that none of them accounts for, those same things. Until the estimate is ready it lists each chat's dollars this week instead.
             </Text>
             {view.estimatedRequests ? (
               <Text size="caption" dimColor>

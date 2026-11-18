@@ -389,7 +389,7 @@ const OTHERS = ['chat-1', 'chat-2', 'chat-3', 'chat-4']
  * every 10 minutes from 40%, for `steps` steps. They took turns seeing the
  * readings (one every 30 s among them).
  */
-function ledgers(steps: number, ids: readonly string[]): Record<string, unknown> {
+function ledgers(steps: number, ids: readonly string[], titles: Record<string, string> = {}): Record<string, unknown> {
   const from = NOW - 70 * MIN
   const until = from + (steps * 10 + 5) * MIN
   const resets = Date.parse(RESETS)
@@ -401,7 +401,7 @@ function ledgers(steps: number, ids: readonly string[]): Record<string, unknown>
   }
   const spend: SpendSeries = []
   for (let m = from / MIN; m < until / MIN; m++) spend.push([m, 1 / ids.length])
-  return Object.fromEntries(ids.map((id, i) => [`ledger1:${id}`, encodeEntry({ at: until, spend, seen: seen[i]! })]))
+  return Object.fromEntries(ids.map((id, i) => [`ledger1:${id}`, encodeEntry(titles[id] ? { at: until, spend, seen: seen[i]!, title: titles[id] } : { at: until, spend, seen: seen[i]! })]))
 }
 
 /** The calls a chat with a session id and no transcript on disk makes. */
@@ -416,7 +416,7 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
   engine(on, [BIG], [AT_45])
   chatAt(on, 'sess-own')
   // This chat and four others, $0.20 a minute each: 41% to 45% took 40 minutes and $40 in all.
-  const store = sharedStore(on, ledgers(5, ['sess-own', ...OTHERS]))
+  const store = sharedStore(on, ledgers(5, ['sess-own', ...OTHERS], { 'chat-1': 'Fix the parser tests', 'chat-2': 'Write the release notes' }))
 
   await $.turn.start({ text: 'Rewrite the parser', turnId: 't1' })
   await runStep($ as never, 't1', 0)
@@ -438,6 +438,15 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
     expect(await ui.find({ type: 'Text', text: /^resets / })).toBeDefined()
     // No longer beside the dollar total, which spans every week the chat ran.
     expect(await ui.find({ type: 'Text', text: /^of weekly$/ })).toBeUndefined()
+    // The bar splits by chat, listed in its order: this chat, each other chat
+    // here ($11 this week, ≈1.1%), and what none of them accounts for (45% less
+    // the five chats' ≈5.8%).
+    expect(await ui.find({ type: 'Text', text: /^This chat$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Fix the parser tests$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Write the release notes$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^≈1\.1%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Unknown: / })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^≈39%$/ })).toBeDefined()
     await ui.unmount()
   }
   // What the estimate is based on, and what makes it run high, are in the notes.
@@ -478,6 +487,10 @@ test('until the weekly window has stepped up a few points, a row shows the measu
   expect(await ui.find({ type: 'Text', text: /^while this chat worked$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^Rough until the estimate is ready/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^this chat$/ })).toBeUndefined()
+  // Without a rate, the chats here are listed by what they spent this week ($0.25 a minute for 35 minutes each).
+  expect(await ui.find({ type: 'Text', text: /^This week by chat, in API-equivalent dollars:$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^\$8\.75$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Unknown: / })).toBeUndefined()
   await ui.press({ key: 'usage-meter-about' })
   await ui.unmount()
   ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -518,6 +531,8 @@ test('a chat adds its spend and the readings it saw to the shared ledger', async
   // Both requests' dollars, by the minute they were sent in: $0.08 each.
   const spent = (own?.spend ?? []).reduce((s, [, usd]) => s + usd, 0)
   expect(Math.abs(spent - 2 * 0.080008) < 1e-5).toBe(true)
+  // How the other chats' split names it: with no session title, its first message.
+  expect(own?.title).toBe('hello')
 })
 
 test('a chat off a subscription adds nothing: its spend does not count against the plan', async ($, on) => {

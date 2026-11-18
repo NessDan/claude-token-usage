@@ -55,15 +55,18 @@ export type SpendSeries = [number, number][]
  */
 export type SeenRun = { first: number; last: number; pct: number; resets: number }
 
-/** One chat's ledger, decoded. */
-export type ChatLedger = { id: string; at: number; spend: SpendSeries; seen: SeenRun[] }
+/** One chat's ledger, decoded. `title`: what the chat is called (its session title, or its first message), for the weekly split by chat. */
+export type ChatLedger = { id: string; at: number; spend: SpendSeries; seen: SeenRun[]; title?: string }
 
 /**
  * A ledger entry as $.store keeps it. The series are compact strings because
  * the store rewrites its whole file, pretty-printed, on every write, and caps it
- * at 4 MiB for every key together.
+ * at 4 MiB for every key together. `title` came later: older entries lack it.
  */
-export type LedgerEntry = { v: 1; at: number; spend: string; seen: string }
+export type LedgerEntry = { v: 1; at: number; spend: string; seen: string; title?: string }
+
+/** A title kept in the ledger: one line, at most this long. */
+const TITLE_MAX = 80
 
 /** One weekly reading: its value and window, and the request it came with (sent at `start`, done at `end`). */
 export type Reading = { pct: number; resets: number; start: number; end: number }
@@ -147,15 +150,48 @@ export function decodeSeen(s: unknown): SeenRun[] {
   return out
 }
 
-export function encodeEntry(l: { at: number; spend: SpendSeries; seen: readonly SeenRun[] }): LedgerEntry {
-  return { v: 1, at: Math.round(l.at), spend: encodeSpend(l.spend), seen: encodeSeen(l.seen) }
+function oneLine(s: unknown): string | undefined {
+  if (typeof s !== 'string') return undefined
+  const t = s.replace(/\s+/g, ' ').trim()
+  return t ? t.slice(0, TITLE_MAX) : undefined
+}
+
+export function encodeEntry(l: { at: number; spend: SpendSeries; seen: readonly SeenRun[]; title?: string }): LedgerEntry {
+  const out: LedgerEntry = { v: 1, at: Math.round(l.at), spend: encodeSpend(l.spend), seen: encodeSeen(l.seen) }
+  const title = oneLine(l.title)
+  if (title) out.title = title
+  return out
 }
 
 /** A stored entry, or undefined when it is not one (another format, damage). */
 export function decodeEntry(id: string, raw: unknown): ChatLedger | undefined {
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined
   if (!o || o.v !== 1 || typeof o.at !== 'number' || !Number.isFinite(o.at)) return undefined
-  return { id, at: o.at, spend: decodeSpend(o.spend), seen: decodeSeen(o.seen) }
+  const out: ChatLedger = { id, at: o.at, spend: decodeSpend(o.spend), seen: decodeSeen(o.seen) }
+  const title = oneLine(o.title)
+  if (title) out.title = title
+  return out
+}
+
+/** One chat's spend in a week: its ledger key, title and dollars. */
+export type ChatWeek = { id: string; title?: string; usd: number; from?: number }
+
+/**
+ * Each chat's dollars from `start` on, biggest first, the chats that spent
+ * nothing in that time left out. `from`: the first minute it spent in.
+ */
+export function weekByChat(chats: readonly ChatLedger[], start: number): ChatWeek[] {
+  const out: ChatWeek[] = []
+  for (const c of chats) {
+    const usd = spendBetween(c.spend, start, Infinity)
+    if (!(usd > 0)) continue
+    const first = c.spend[lowerBound(c.spend, Math.floor(start / MIN))]
+    const w: ChatWeek = { id: c.id, usd }
+    if (c.title) w.title = c.title
+    if (first) w.from = first[0] * MIN
+    out.push(w)
+  }
+  return out.sort((a, b) => b.usd - a.usd)
 }
 
 // ---------------------------------------------------------------- one chat's ledger

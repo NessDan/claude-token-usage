@@ -143,6 +143,12 @@ export type WeeklyState = {
   to?: number
   /** The newest weekly reading any chat here saw (`pct` used, the window resetting at `resets`, known at `at`); older entries lack it. */
   latest?: { pct: number; resets: number; at: number }
+  /**
+   * What each chat here spent since the weekly window began at `start`, by its
+   * ledger key, biggest first (lib/weekly.ts's weekByChat); `from` is the first
+   * minute it spent in. For the weekly section's split by chat.
+   */
+  week?: { start: number; chats: { id: string; title?: string; usd: number; from?: number }[] }
   /** Points needed before the estimate is shown. */
   minPoints: number
   /** When it was worked out. */

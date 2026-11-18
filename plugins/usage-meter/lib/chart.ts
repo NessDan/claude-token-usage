@@ -64,38 +64,47 @@ export function meterSvg(fraction: number, width: number, height: number, fill: 
   return svgDoc(width, height, `<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>${filled}`)
 }
 
-/** The account's use of the weekly limit, under this chat's slice. */
-const USED = 'rgba(154,151,143,0.55)'
+/** The account's use of the weekly limit, as one gray. */
+export const USED_FILL = '#8a877f'
+/** The other chats in the weekly split, biggest first: grays that step down, then the chats past those. */
+export const OTHER_CHAT_FILLS = ['#b8b5ad', '#9a978f', '#7f7c75'] as const
+export const MORE_CHATS_FILL = '#68655f'
+/** Use the meter can't put a chat to (claude.ai, the phone, another computer): hatched. */
+export const UNKNOWN_FILL = '#9a978f'
+
+/** One part of a stacked meter: its share of the whole (0 to 1), its fill, and whether it is hatched. */
+export type MeterPart = { frac: number; fill: string; hatch?: boolean }
 
 /**
- * The weekly limit as one meter: the faint rail is the whole limit, the gray
- * part what the account has used of it this week (`used`, 0 to 1; undefined
- * when there is no reading in this week yet), and on top, from the left, this
- * chat's share (`you` + `claude`, fractions of the limit), split as your
- * messages (blue) and Claude's replies (orange).
+ * A thin meter of the whole weekly limit: the faint rail is the limit, and from
+ * the left come the parts in order, 1.5 px apart, the ends of the lot rounded.
+ * A part too thin to see keeps 2 px; the figures beside the meter say how big
+ * each is.
  */
-export function weekMeterSvg(you: number, claude: number, used: number | undefined, width: number, height: number): string {
-  const f = (x: number | undefined) => Math.max(0, Math.min(1, x !== undefined && Number.isFinite(x) ? x : 0))
+export function stackedMeterSvg(parts: readonly MeterPart[], width: number, height: number): string {
   const r = height / 2
-  const parts = [`<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>`]
-  const a = f(you) * width
-  const b = f(claude) * width
-  const chat = Math.min(width, a + b)
-  const u = Math.max(f(used) * width, chat)
-  if (u >= 0.5) parts.push(`<rect x="0" y="0" width="${px(Math.max(u, height))}" height="${height}" rx="${r}" fill="${USED}"/>`)
-  if (chat > 0) {
-    // A slice too thin to see keeps 3 px; the figure beside the meter says how big it is.
-    const w = Math.max(chat, 3)
-    const both = a > 0 && b > 0 && w >= 8
-    const gap = both ? 1.5 : 0
-    const wa = both ? Math.min(Math.max((a / (a + b)) * (w - gap), 2), w - gap - 2) : a >= b ? w : 0
-    const wb = both ? w - gap - wa : a >= b ? 0 : w
-    parts.push(`<clipPath id="c"><rect x="0" y="0" width="${px(w)}" height="${height}" rx="${r}"/></clipPath><g clip-path="url(#c)">`)
-    if (wa > 0) parts.push(`<rect x="0" y="0" width="${px(wa)}" height="${height}" fill="${YOU_COLOR}"/>`)
-    if (wb > 0) parts.push(`<rect x="${px(wa + gap)}" y="0" width="${px(wb)}" height="${height}" fill="${CLAUDE_COLOR}"/>`)
-    parts.push('</g>')
+  const body = [`<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>`]
+  const shown = parts.filter(p => Number.isFinite(p.frac) && p.frac > 0)
+  const total = Math.min(1, shown.reduce((s, p) => s + p.frac, 0))
+  if (total > 0) {
+    const gap = 1.5
+    const w = Math.min(width, Math.max(total * width, shown.length * (2 + gap)))
+    const avail = Math.max(0, w - gap * (shown.length - 1))
+    const raw = shown.map(p => Math.max(2, (p.frac / total) * avail))
+    const scale = avail / raw.reduce((s, x) => s + x, 0)
+    body.push(
+      `<defs><pattern id="h" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="2" height="4" fill="${UNKNOWN_FILL}"/></pattern>` +
+        `<clipPath id="c"><rect x="0" y="0" width="${px(w)}" height="${height}" rx="${r}"/></clipPath></defs><g clip-path="url(#c)">`,
+    )
+    let x = 0
+    shown.forEach((p, i) => {
+      const pw = raw[i]! * scale
+      body.push(`<rect x="${px(x)}" y="0" width="${px(pw)}" height="${height}" fill="${p.hatch ? 'url(#h)' : p.fill}"/>`)
+      x += pw + gap
+    })
+    body.push('</g>')
   }
-  return svgDoc(width, height, parts.join(''))
+  return svgDoc(width, height, body.join(''))
 }
 
 function esc(s: string): string {
