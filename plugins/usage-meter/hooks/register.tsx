@@ -1350,14 +1350,18 @@ export const register: Register = on => {
       const share = rate === undefined ? undefined : ownUsd * rate
       // Until then, the account-wide change measured around this chat's messages: never drawn as its slice.
       const measured = share === undefined ? measuredWeek(view.rows, wk.start) : undefined
-      // The other chats here, as the last calibration read their ledgers, for this same week.
+      // The other chats here, as the last calibration read their ledgers, for this same week
+      // (its start read from another reading can differ by seconds: within an hour is the same window).
       const ownKey = await ledgerKey($)
-      const others = calib?.week && calib.week.start === wk.start ? calib.week.chats.filter(c => c.id !== ownKey && c.usd >= 0.005) : []
+      const sameWeek = !!calib?.week && Math.abs(calib.week.start - wk.start) <= 3_600_000
+      const others = sameWeek ? calib!.week!.chats.filter(c => c.id !== ownKey && c.usd >= 0.005) : []
       const named = others.length > 4 ? others.slice(0, 3) : others
       const rest = others.slice(named.length)
       const restUsd = rest.reduce((s, c) => s + c.usd, 0)
-      // What the reading moved that no chat here accounts for: claude.ai, the phone, another computer...
-      const unknown = rate !== undefined && share !== undefined && wk.pct !== undefined ? Math.max(0, wk.pct - share - others.reduce((s, c) => s + c.usd * rate, 0)) : undefined
+      // What the reading moved that no chat here accounts for (claude.ai, the phone, another
+      // computer, a chat on an older meter); unknown itself when the other chats' week isn't at hand.
+      const unknown =
+        rate !== undefined && share !== undefined && wk.pct !== undefined && sameWeek ? Math.max(0, wk.pct - share - others.reduce((s, c) => s + c.usd * rate, 0)) : undefined
       // The bar: by chat once the rate is ready, else the account's use alone.
       const parts: MeterPart[] = []
       if (rate !== undefined && share !== undefined) {
@@ -1370,13 +1374,14 @@ export const register: Register = on => {
       }
       // Its list: each chat's share (or, until the rate is ready, its dollars this week), in the bar's order.
       const amount = (usd: number) => (rate === undefined ? fmtUsd(usd) : usd * rate > 0 ? fmtEstimate(usd * rate) : '0%')
-      const chatName = (c: { title?: string; from?: number }) => c.title ?? (c.from ? `A chat from ${dayClock(c.from, now)}` : 'Another chat')
+      // A chat on an older meter wrote no title: named by when it first spent this week.
+      const chatName = (c: { title?: string; from?: number }) => c.title ?? (c.from ? `Another chat (from ${dayClock(c.from, now)})` : 'Another chat')
       const lines: { key: string; glyph: string; color: string; name: string; value: string; strong?: boolean }[] = []
       if (others.length || unknown) {
         lines.push({ key: 'own', glyph: '■', color: rate === undefined ? USED_FILL : CLAUDE_COLOR, name: 'This chat', value: amount(ownUsd), strong: true })
         named.forEach((c, i) => lines.push({ key: c.id, glyph: '■', color: rate === undefined ? USED_FILL : (OTHER_CHAT_FILLS[i] ?? MORE_CHATS_FILL), name: chatName(c), value: amount(c.usd) }))
         if (rest.length) lines.push({ key: 'more', glyph: '■', color: rate === undefined ? USED_FILL : MORE_CHATS_FILL, name: `${rest.length} more chats`, value: amount(restUsd) })
-        if (unknown) lines.push({ key: 'unknown', glyph: '▨', color: UNKNOWN_FILL, name: 'Unknown: claude.ai, your phone, other computers', value: `≈${fmtShare(unknown)}` })
+        if (unknown) lines.push({ key: 'unknown', glyph: '▨', color: UNKNOWN_FILL, name: 'Unknown', value: `≈${fmtShare(unknown)}` })
       }
       const head =
         share !== undefined
@@ -1773,7 +1778,7 @@ export const register: Register = on => {
               The estimate runs high while something the meter can't see uses your account: claude.ai, the phone, another computer, or a chat here that hasn't loaded this version of the meter (run /reload-plugins there). Each message's measured change is in its details.
             </Text>
             <Text size="caption" dimColor>
-              Weekly limit splits your week by chat: this one, each other chat on this computer that runs the meter (by its title), and Unknown, what the reading moved that none of them accounts for, those same things. Until the estimate is ready it lists each chat's dollars this week instead.
+              Weekly limit splits your week by chat: this one, each other chat on this computer that runs this version of the meter (by its title), and Unknown, what the reading moved that none of them accounts for: chats that haven't loaded this version (run /reload-plugins there), claude.ai, the phone, another computer. Until the estimate is ready it lists each chat's dollars this week instead.
             </Text>
             {view.estimatedRequests ? (
               <Text size="caption" dimColor>

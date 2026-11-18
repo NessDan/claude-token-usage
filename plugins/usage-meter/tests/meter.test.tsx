@@ -417,6 +417,7 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
   chatAt(on, 'sess-own')
   // This chat and four others, $0.20 a minute each: 41% to 45% took 40 minutes and $40 in all.
   const store = sharedStore(on, ledgers(5, ['sess-own', ...OTHERS], { 'chat-1': 'Fix the parser tests', 'chat-2': 'Write the release notes' }))
+  on('session.measure', (_, e) => ({ changed: [...e.changed] }))
 
   await $.turn.start({ text: 'Rewrite the parser', turnId: 't1' })
   await runStep($ as never, 't1', 0)
@@ -445,7 +446,7 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
     expect(await ui.find({ type: 'Text', text: /^Fix the parser tests$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Write the release notes$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^≈1\.1%$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^Unknown: / })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^≈39%$/ })).toBeDefined()
     await ui.unmount()
   }
@@ -464,6 +465,14 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
   const own = decodeEntry('ledger1:sess-own', store.get('ledger1:sess-own'))
   const spent = (own?.spend ?? []).reduce((s, [, usd]) => s + usd, 0)
   expect(Math.abs(spent - (11 + 2.700008)) < 1e-5).toBe(true)
+
+  // This chat's own reading then arrives with the window's reset a few seconds
+  // off the ledgers' (they keep whole seconds): the same week, other chats and all.
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ ...AT_45[0]!, resetsAt: '2026-11-20T12:00:03.400Z' }], changed: ['rateLimits'] } as never)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Fix the parser tests$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('until the weekly window has stepped up a few points, a row shows the measured change and the notes say why', async ($, on) => {
@@ -490,7 +499,7 @@ test('until the weekly window has stepped up a few points, a row shows the measu
   // Without a rate, the chats here are listed by what they spent this week ($0.25 a minute for 35 minutes each).
   expect(await ui.find({ type: 'Text', text: /^This week by chat, in API-equivalent dollars:$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^\$8\.75$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Unknown: / })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeUndefined()
   await ui.press({ key: 'usage-meter-about' })
   await ui.unmount()
   ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
