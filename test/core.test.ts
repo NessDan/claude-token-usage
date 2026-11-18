@@ -950,6 +950,18 @@ describe('the weekly share estimate', () => {
     assert.equal(calibrate([{ ...chat, seen: poll(1, S, end, pctAt)[0]! }], end + HOUR).reset, undefined)
   })
 
+  test('a reading left over from before a reset, seen just after it, is no second reset and no climb', () => {
+    const at = (m: number) => S + m * MIN
+    const run = (m: number, pct: number): SeenRun => ({ first: at(m), last: at(m), pct, resets: RESET })
+    // 98% until the reset, 56% first seen at 30 minutes; another chat's request, sent before the
+    // reset, answers 98% a minute after; then 57%.
+    const seen = [run(0, 97), run(5, 98), run(30, 56), run(31, 98), run(40, 57)]
+    const cal = calibrate([{ id: 'c', at: at(40), spend: steady(at(0), at(40), 1), seen }], at(40) + HOUR)
+    assert.deepEqual(cal.reset, { at: at(30), pct: 56 })
+    // Kept, the 98% would anchor a 41-point climb from 57%.
+    assert.equal(cal.points, 0)
+  })
+
   test('the calibration keeps the newest reading any chat saw, for the pane to read the week from', () => {
     const resets = T0 + 3 * 24 * 60 * MIN
     const a: ChatLedger = { id: 'a', at: T0 + 2 * MIN, spend: [], seen: [{ first: T0, last: T0 + MIN, pct: 41, resets }] }

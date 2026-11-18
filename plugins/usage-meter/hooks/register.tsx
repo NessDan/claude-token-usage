@@ -66,6 +66,7 @@ import {
   noteReading,
   overlaySpend,
   pruneLedger,
+  RESET_DROP,
   SETTLE_MS,
   spendBetween,
   weekByChat,
@@ -361,7 +362,11 @@ function coldWords(r: MeterRow, ttl: Ttl): string | undefined {
 function limitWords(r: MeterRow): string | undefined {
   if (!r.limits || !r.limits.length) return undefined
   const since = r.limitsSince === undefined ? '' : r.limitsSince > 0 ? ` since ${clock(r.limitsSince)}` : ' since the last reading'
-  const each = r.limits.map(l => (l.didReset ? `${l.label} reset, now ${l.now ?? l.delta}%` : `${l.label} ${fmtPoints(l.delta)}`))
+  // A drop of RESET_DROP points or more is a reset inside the week (a Fable reset, say), also in
+  // a change an older meter stored as a plain negative one.
+  const each = r.limits.map(l =>
+    l.didReset || l.delta <= -RESET_DROP ? `${l.label} reset, now ${l.now ?? Math.max(0, l.delta)}%` : `${l.label} ${fmtPoints(l.delta)}`,
+  )
   return `Plan (all your sessions${since}): ${each.join(' · ')}`
 }
 
@@ -478,7 +483,7 @@ function weeklyShare(r: MeterRow, calib: WeeklyState | null): string | undefined
   const est = estimatedShare(r.total, calib)
   if (est !== undefined) return fmtEstimate(est)
   const w = r.limits?.find(l => l.label === 'Weekly')
-  if (!w || w.didReset) return undefined
+  if (!w || w.didReset || w.delta <= -RESET_DROP) return undefined
   if (w.delta > 0) return fmtPoints(w.delta)
   return Number.isInteger(w.now ?? 0) ? '<1%' : '<0.1%'
 }
@@ -1420,7 +1425,8 @@ export const register: Register = on => {
       const amount = (usd: number) => (rate === undefined ? fmtUsd(usd) : usd * rate > 0 ? fmtEstimate(usd * rate) : '0%')
       const lines: { key: string; color: string; name: string; value: string; strong?: boolean }[] = []
       if (others.length || unknown || (rate !== undefined && before)) {
-        if (reset && before && rate !== undefined) lines.push({ key: 'before', color: BEFORE_RESET_FILL, name: `Before the reset ${dayClock(reset.at, now)}`, value: fmtPct(before) })
+        // What the reading showed when a chat here first saw the reset: use from before then.
+        if (reset && before && rate !== undefined) lines.push({ key: 'before', color: BEFORE_RESET_FILL, name: `Used before ${dayClock(reset.at, now)}`, value: fmtPct(before) })
         for (const c of byChat) lines.push({ key: c.key, color: c.color, name: c.name, value: amount(c.usd), strong: c.strong })
         if (unknown) lines.push({ key: 'unknown', color: UNKNOWN_FILL, name: 'Unknown', value: `≈${fmtShare(unknown)}` })
       }
@@ -1443,7 +1449,7 @@ export const register: Register = on => {
         wk.pct === undefined
           ? `No reading since the weekly reset ${dayClock(wk.start, now)} yet.`
           : share === undefined
-            ? `Rough until the estimate is ready: the reading moves in whole steps and counts other chats running at the same time.${reset ? ` Counted from the reset ${dayClock(reset.at, now)}, when ${fmtPct(before)} was still used.` : ''}`
+            ? `Rough until the estimate is ready: the reading moves in whole steps and counts other chats running at the same time.${reset ? ` The darker part is the ${fmtPct(before)} used before ${dayClock(reset.at, now)}, when a chat here first saw the reset.` : ''}`
             : !reset && firstAt !== undefined && firstAt < wk.start
               ? `This week only: since the reset ${dayClock(wk.start, now)}.`
               : undefined
@@ -1481,7 +1487,7 @@ export const register: Register = on => {
             <Box flexDirection="column">
               {rate === undefined ? (
                 <Text size="caption" dimColor>
-                  {reset ? `Since the reset ${dayClock(reset.at, now)}` : 'This week'} by chat, in API-equivalent dollars:
+                  {reset ? 'Since the reset' : 'This week'} by chat, in API-equivalent dollars:
                 </Text>
               ) : null}
               {lines.map(l => (

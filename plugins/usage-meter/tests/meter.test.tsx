@@ -543,6 +543,9 @@ test('after a reset inside the week, the split counts from the reset and shows w
   const c1 = decodeEntry('ledger1:chat-1', seed['ledger1:chat-1'])!
   const resetRun = { first: NOW - 10 * MIN, last: NOW - 10 * MIN, pct: 20, resets: Date.parse(RESETS) }
   seed['ledger1:chat-1'] = encodeEntry({ at: NOW - 10 * MIN, spend: c1.spend, seen: [...c1.seen, resetRun] })
+  // Another chat spends $5 after the reset.
+  const c2 = decodeEntry('ledger1:chat-2', seed['ledger1:chat-2'])!
+  seed['ledger1:chat-2'] = encodeEntry({ at: NOW - 4 * MIN, spend: [...c2.spend, [Math.floor((NOW - 5 * MIN) / MIN), 5]], seen: c2.seen, title: 'Write the release notes' })
   sharedStore(on, seed)
 
   await $.turn.start({ text: 'Rewrite the parser', turnId: 't1' })
@@ -550,15 +553,18 @@ test('after a reset inside the week, the split counts from the reset and shows w
   await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer', usage: BIG })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // The 20% left at the reset is a part of its own; this chat's $2.70 since then is ≈0.27%
-  // (the rate the climb before the reset gave still holds), and the rest of the 21% is unknown.
-  expect(await ui.find({ type: 'Text', text: /^Before the reset / })).toBeDefined()
+  // The 20% read when the reset was first seen is a part of its own; since then this chat's
+  // $2.70 is ≈0.27% and the other chat's $5 ≈0.50% (the rate the climb before the reset gave
+  // still holds), and the rest of the 21% is unknown.
+  expect(await ui.find({ type: 'Text', text: /^Used before / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^20%$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^21%$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^≈0\.27%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Write the release notes$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^≈0\.50%$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^≈0\.73%$/ })).toBeDefined()
-  // The other chats spent nothing since the reset: none of their earlier use is put on them.
+  expect(await ui.find({ type: 'Text', text: /^≈0\.23%$/ })).toBeDefined()
+  // The chats that spent nothing since the reset get none of their earlier use put on them.
   expect(await ui.find({ type: 'Text', text: /^Another chat/ })).toBeUndefined()
   await ui.unmount()
 })

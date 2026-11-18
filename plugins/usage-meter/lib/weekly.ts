@@ -328,12 +328,34 @@ function spells(runs: readonly SeenRun[]): SeenRun[][] {
   return out
 }
 
-/** A reset inside a week: when the reading was first seen after it dropped (`at`), and what it dropped to (`pct`), all the use from before the reset that still counts. */
+/**
+ * One window's runs in time order, less any reading left over from before a
+ * reset: one nearer the old level than the new, seen within ANCHOR_GAP_MS after
+ * the drop (a request sent before the reset, answered after). Kept, it would
+ * look like a climb of many points in minutes, and the next real reading like a
+ * second reset.
+ */
+function withoutStale(window: readonly SeenRun[]): SeenRun[] {
+  const out: SeenRun[] = []
+  let high = -Infinity
+  let reset: { at: number; pct: number; high: number } | undefined
+  for (const r of [...window].sort((a, b) => runStart(a) - runStart(b))) {
+    if (reset && runStart(r) - reset.at <= ANCHOR_GAP_MS && r.pct >= reset.pct + Math.max(RESET_DROP, (reset.high - reset.pct) / 2)) continue
+    if (r.pct <= high - RESET_DROP) {
+      reset = { at: runStart(r), pct: r.pct, high }
+      high = r.pct
+    } else high = Math.max(high, r.pct)
+    out.push(r)
+  }
+  return out
+}
+
+/** A reset inside a week: when a chat here first saw the reading after it dropped (`at`), and what it read then (`pct`): all the use that still counts from before then. */
 export type WeekReset = { at: number; pct: number }
 
 /** The latest reset inside the window ending at `resets` (RESET_DROP), or undefined when the reading only climbed. */
 export function lastReset(runs: readonly SeenRun[], resets: number): WeekReset | undefined {
-  const window = runs.filter(r => sameWindow(r.resets, resets)).sort((a, b) => runStart(a) - runStart(b))
+  const window = withoutStale(runs.filter(r => sameWindow(r.resets, resets)))
   let high = -Infinity
   let out: WeekReset | undefined
   for (const r of window) {
@@ -389,7 +411,7 @@ export function calibrate(chats: readonly ChatLedger[], now: number): Calibratio
   let to: number | undefined
   const used = new Set<string>()
   for (const window of byWindow(runs)) {
-    for (const spell of spells(window)) {
+    for (const spell of spells(withoutStale(window))) {
       const anchors = anchorsOf(spell, now)
       const a = anchors[0]
       const b = anchors[anchors.length - 1]
