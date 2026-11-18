@@ -664,6 +664,9 @@ export function limitLabel(kind: string): string {
  * same window while its reset time is: a later reset time means it rolled over
  * in between, and the change then counts from the reset (the new reading).
  */
+/** A reading this many points below the one before it, in the same window, is a reset inside the week (as lib/weekly.ts's RESET_DROP; both files stay free of imports). */
+const RESET_DROP = 2
+
 export function limitDeltas(before: readonly LimitReading[], after: readonly LimitReading[]): LimitDelta[] {
   const out: LimitDelta[] = []
   for (const a of after) {
@@ -671,8 +674,12 @@ export function limitDeltas(before: readonly LimitReading[], after: readonly Lim
     if (!b) continue
     const bReset = b.resetsAt ? Date.parse(b.resetsAt) : NaN
     const aReset = a.resetsAt ? Date.parse(a.resetsAt) : NaN
+    // A new window, or within the same one a reading that dropped (a reset inside the week: the
+    // whole limit's, or one model's part of it, as a Fable reset); without reset times, any drop.
     const didReset =
-      Number.isFinite(aReset) && Number.isFinite(bReset) ? aReset > bReset + 60_000 : a.percentUsed < b.percentUsed
+      Number.isFinite(aReset) && Number.isFinite(bReset)
+        ? aReset > bReset + 60_000 || a.percentUsed <= b.percentUsed - RESET_DROP
+        : a.percentUsed < b.percentUsed
     const delta = didReset ? a.percentUsed : a.percentUsed - b.percentUsed
     out.push({ kind: a.kind, label: limitLabel(a.kind), before: b.percentUsed, after: a.percentUsed, delta: Math.round(delta * 10) / 10, didReset })
   }

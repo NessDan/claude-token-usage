@@ -75,6 +75,8 @@ export const THIS_CHAT_FILL = '#e2602c'
 export const OTHER_CHAT_FILLS = ['#199e70', '#8578e6', '#d55181', '#3f9d3a'] as const
 /** Weekly use the meter can't put to a chat here, and the account's whole use before the split is ready: gray. */
 export const UNKNOWN_FILL = '#8a877f'
+/** What was used before a reset inside the week and still counts: a darker gray, first in the bar. */
+export const BEFORE_RESET_FILL = '#5f5c56'
 
 /** One part of a stacked meter: its share of the whole (0 to 1) and its fill. */
 export type MeterPart = { frac: number; fill: string }

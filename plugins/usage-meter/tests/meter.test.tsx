@@ -533,6 +533,36 @@ test('a notice the app writes into the chat is labelled as one, not shown as typ
   await ui.unmount()
 })
 
+test('after a reset inside the week, the split counts from the reset and shows what was used before it', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  // This chat reads 21% now: the week reset ten minutes ago (a Fable reset, say), leaving 20%,
+  // as another chat saw. Before that, the five chats here climbed from 41% to 45%.
+  engine(on, [BIG], [[{ kind: 'seven_day', percentUsed: 21, resetsAt: RESETS }]])
+  chatAt(on, 'sess-own')
+  const seed = ledgers(5, ['sess-own', ...OTHERS])
+  const c1 = decodeEntry('ledger1:chat-1', seed['ledger1:chat-1'])!
+  const resetRun = { first: NOW - 10 * MIN, last: NOW - 10 * MIN, pct: 20, resets: Date.parse(RESETS) }
+  seed['ledger1:chat-1'] = encodeEntry({ at: NOW - 10 * MIN, spend: c1.spend, seen: [...c1.seen, resetRun] })
+  sharedStore(on, seed)
+
+  await $.turn.start({ text: 'Rewrite the parser', turnId: 't1' })
+  await runStep($ as never, 't1', 0)
+  await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer', usage: BIG })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // The 20% left at the reset is a part of its own; this chat's $2.70 since then is ≈0.27%
+  // (the rate the climb before the reset gave still holds), and the rest of the 21% is unknown.
+  expect(await ui.find({ type: 'Text', text: /^Before the reset / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^20%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^21%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^≈0\.27%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^≈0\.73%$/ })).toBeDefined()
+  // The other chats spent nothing since the reset: none of their earlier use is put on them.
+  expect(await ui.find({ type: 'Text', text: /^Another chat/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('a chat adds its spend and the readings it saw to the shared ledger', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   // The window steps from 45% to 46% between this chat's two requests.

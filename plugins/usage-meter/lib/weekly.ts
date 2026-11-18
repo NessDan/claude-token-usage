@@ -40,6 +40,13 @@ export const MAX_EDGE_SHARE = 0.25
 export const SETTLE_MS = 2 * MIN
 /** Two reset times this close are the same window. */
 const SAME_WINDOW_MS = HOUR
+/**
+ * A reading at least this many points below the highest seen before it in the
+ * same window is a reset inside the week (the whole limit's, or one model's
+ * part of it, as a Fable reset takes Fable's use back off the reading), not a
+ * stale reading: another chat's stale one is at most a step behind.
+ */
+export const RESET_DROP = 2
 /** Caps on one chat's entry: minutes of spend, and runs of readings. */
 const MAX_MINUTES = 20_000
 const MAX_RUNS = 5_000
@@ -90,6 +97,8 @@ export type Calibration = {
   to?: number
   /** The newest weekly reading any chat here saw: its value, its window's reset, and when it was last known to hold. */
   latest?: LatestReading
+  /** The latest reset inside that reading's week, if its reading dropped (lastReset). */
+  reset?: WeekReset
 }
 
 /** A weekly reading as of a moment: `pct` used, the window resetting at `resets`, known at `at`. */
@@ -294,17 +303,44 @@ function byWindow(runs: readonly SeenRun[]): SeenRun[][] {
   return out
 }
 
-/** Runs split into spells of activity: SPLIT_GAP_MS with no reading from any chat ends a spell. */
+const runStart = (r: SeenRun) => Math.min(r.first, r.last)
+const runEnd = (r: SeenRun) => Math.max(r.first, r.last)
+
+/**
+ * Runs split into spells of activity: SPLIT_GAP_MS with no reading from any
+ * chat ends a spell, and so does a reset inside the week (RESET_DROP), since no
+ * stretch can span one.
+ */
 function spells(runs: readonly SeenRun[]): SeenRun[][] {
-  const from = (r: SeenRun) => Math.min(r.first, r.last)
-  const to = (r: SeenRun) => Math.max(r.first, r.last)
-  const sorted = [...runs].sort((a, b) => from(a) - from(b))
+  const sorted = [...runs].sort((a, b) => runStart(a) - runStart(b))
   const out: SeenRun[][] = []
   let end = -Infinity
+  let high = -Infinity
   for (const r of sorted) {
-    if (!out.length || from(r) - end > SPLIT_GAP_MS) out.push([])
+    if (!out.length || runStart(r) - end > SPLIT_GAP_MS || r.pct <= high - RESET_DROP) {
+      out.push([])
+      high = -Infinity
+    }
     out[out.length - 1]!.push(r)
-    end = Math.max(end, to(r))
+    end = Math.max(end, runEnd(r))
+    high = Math.max(high, r.pct)
+  }
+  return out
+}
+
+/** A reset inside a week: when the reading was first seen after it dropped (`at`), and what it dropped to (`pct`), all the use from before the reset that still counts. */
+export type WeekReset = { at: number; pct: number }
+
+/** The latest reset inside the window ending at `resets` (RESET_DROP), or undefined when the reading only climbed. */
+export function lastReset(runs: readonly SeenRun[], resets: number): WeekReset | undefined {
+  const window = runs.filter(r => sameWindow(r.resets, resets)).sort((a, b) => runStart(a) - runStart(b))
+  let high = -Infinity
+  let out: WeekReset | undefined
+  for (const r of window) {
+    if (r.pct <= high - RESET_DROP) {
+      out = { at: r.first, pct: r.pct }
+      high = r.pct
+    } else high = Math.max(high, r.pct)
   }
   return out
 }
@@ -394,7 +430,11 @@ export function calibrate(chats: readonly ChatLedger[], now: number): Calibratio
   }
   if (from !== undefined) out.from = from
   if (to !== undefined) out.to = to
-  if (latest) out.latest = latest
+  if (latest) {
+    out.latest = latest
+    const reset = lastReset(runs, latest.resets)
+    if (reset) out.reset = reset
+  }
   return out
 }
 

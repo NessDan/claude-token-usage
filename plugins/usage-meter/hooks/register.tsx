@@ -31,6 +31,7 @@ import type {
 } from '../types/index.d.ts'
 import type { MeterPart } from '../lib/chart.ts'
 import {
+  BEFORE_RESET_FILL,
   chartSlots,
   CLAUDE_COLOR,
   isColdRow,
@@ -409,6 +410,15 @@ function weekWindow(measure: MeasureState | null, calib: { latest?: { pct: numbe
   let next = r.resets
   while (next <= now) next += WEEK_MS
   return { start: next - WEEK_MS, resets: next, at: r.at }
+}
+
+/**
+ * The latest reset inside this week (the reading dropped: the whole limit's,
+ * or one model's part of it, as a Fable reset), if it fell in the week and has
+ * happened. The week's split by chat counts from it.
+ */
+function resetIn(reset: { at: number; pct: number } | undefined, wk: WeekWindow, now: number): { at: number; pct: number } | undefined {
+  return reset && reset.at > wk.start && reset.at <= now ? reset : undefined
 }
 
 /**
@@ -950,8 +960,10 @@ async function recalibrate($: EngineInterface, force = false): Promise<void> {
     if (key && ownLoaded && ownSeen.length) chats.push(await ownLedger($, key, now))
     const cal = calibrate(chats, now)
     // What each chat here spent this week, for the weekly section's split by chat.
+    // Counted from the latest reset inside the week, if there was one.
     const wk = weekWindow(await read($, MEASURE), cal, now)
-    const week = wk ? { start: wk.start, chats: weekByChat(chats, wk.start) } : undefined
+    const since = wk ? (resetIn(cal.reset, wk, now)?.at ?? wk.start) : 0
+    const week = wk ? { start: wk.start, since, chats: weekByChat(chats, since) } : undefined
     dbg($, `weekly calibration: ${cal.points} points over $${cal.usd.toFixed(2)} from ${cal.chats} of ${chats.length} chats${cal.ready ? `, 1% per $${(1 / cal.pointsPerUsd).toFixed(2)}` : ', not ready'}`)
     await update($, WEEKLY, () => (week ? { ...cal, minPoints: MIN_POINTS, at: now, week } : { ...cal, minPoints: MIN_POINTS, at: now }))
   } catch (err) {
@@ -1356,16 +1368,23 @@ export const register: Register = on => {
     let weekly = null
     if (wk) {
       const rate = calib && calib.ready && calib.pointsPerUsd > 0 ? calib.pointsPerUsd : undefined
-      // This chat's own spend since the week began (a fork's copied history left out).
+      // After a reset inside the week (the reading dropped: the whole limit's, or one model's part,
+      // as a Fable reset), everything counts from the reset, and what was used before it and still
+      // counts is one part of its own: the meter can't tell whose that is.
+      const reset = demo ? undefined : resetIn(calib?.reset ?? undefined, wk, now)
+      const since = reset ? reset.at : wk.start
+      const before = reset && wk.pct !== undefined ? Math.min(reset.pct, wk.pct) : 0
+      // This chat's own spend since then (a fork's copied history left out).
       // (Up to Infinity: the minute running now counts whole, not the part of it gone by.)
-      const ownUsd = demo ? demo.ownUsd : spendBetween(chatSeries(live, ttl, now), wk.start, Infinity)
+      const ownUsd = demo ? demo.ownUsd : spendBetween(chatSeries(live, ttl, now), since, Infinity)
       const share = rate === undefined ? undefined : ownUsd * rate
       // Until then, the account-wide change measured around this chat's messages: never drawn as its slice.
-      const measured = share === undefined ? measuredWeek(view.rows, wk.start) : undefined
-      // The other chats here, as the last calibration read their ledgers, for this same week
-      // (its start read from another reading can differ by seconds: within an hour is the same window).
+      const measured = share === undefined ? measuredWeek(view.rows, since) : undefined
+      // The other chats here, as the last calibration read their ledgers, for this same week and
+      // from the same reset (read from another reading, a start can differ by seconds).
       const ownKey = demo ? demo.ownKey : await ledgerKey($)
-      const sameWeek = !!calib?.week && Math.abs(calib.week.start - wk.start) <= 3_600_000
+      const sameWeek =
+        !!calib?.week && Math.abs(calib.week.start - wk.start) <= 3_600_000 && Math.abs((calib.week.since ?? calib.week.start) - since) <= 3_600_000
       const others = sameWeek ? calib!.week!.chats.filter(c => c.id !== ownKey && c.usd >= 0.005) : []
       // Up to four other chats by name (the biggest), else three and the rest together. Each
       // named chat keeps one color all week: they go in the order they first spent this week,
@@ -1376,7 +1395,9 @@ export const register: Register = on => {
       // What the reading moved that no chat here accounts for (claude.ai, the phone, another
       // computer, a chat on an older meter); unknown itself when the other chats' week isn't at hand.
       const unknown =
-        rate !== undefined && share !== undefined && wk.pct !== undefined && sameWeek ? Math.max(0, wk.pct - share - others.reduce((s, c) => s + c.usd * rate, 0)) : undefined
+        rate !== undefined && share !== undefined && wk.pct !== undefined && sameWeek
+          ? Math.max(0, wk.pct - before - share - others.reduce((s, c) => s + c.usd * rate, 0))
+          : undefined
       // Each part, in the bar's order and the list's: this chat, the others, the rest together, Unknown.
       const chatName = (c: { title?: string; from?: number }) => c.title ?? (c.from ? `Another chat (from ${dayClock(c.from, now)})` : 'Another chat')
       const byChat = [
@@ -1384,18 +1405,22 @@ export const register: Register = on => {
         ...named.map((c, i) => ({ key: c.id, color: OTHER_CHAT_FILLS[i]!, name: chatName(c), usd: c.usd, strong: false })),
         ...(rest.length ? [{ key: 'more', color: OTHER_CHAT_FILLS[3], name: `${rest.length} more chats`, usd: restUsd, strong: false }] : []),
       ]
-      // The bar: by chat once the rate is ready; until then the account's use alone, in gray.
+      // The bar: what was used before a reset first, then by chat once the rate is ready; until
+      // then the rest of the account's use, in gray.
       const parts: MeterPart[] = []
+      if (before) parts.push({ frac: before / 100, fill: BEFORE_RESET_FILL })
       if (rate !== undefined) {
         for (const c of byChat) parts.push({ frac: (c.usd * rate) / 100, fill: c.color })
         if (unknown) parts.push({ frac: unknown / 100, fill: UNKNOWN_FILL })
       } else if (wk.pct !== undefined) {
-        parts.push({ frac: wk.pct / 100, fill: UNKNOWN_FILL })
+        parts.push({ frac: (wk.pct - before) / 100, fill: UNKNOWN_FILL })
       }
-      // Its list: each chat's share (or, until the rate is ready, its dollars this week), each in its color.
+      // Its list: each chat's share (or, until the rate is ready, its dollars since the week or the
+      // reset began), each in its color, in the bar's order.
       const amount = (usd: number) => (rate === undefined ? fmtUsd(usd) : usd * rate > 0 ? fmtEstimate(usd * rate) : '0%')
       const lines: { key: string; color: string; name: string; value: string; strong?: boolean }[] = []
-      if (others.length || unknown) {
+      if (others.length || unknown || (rate !== undefined && before)) {
+        if (reset && before && rate !== undefined) lines.push({ key: 'before', color: BEFORE_RESET_FILL, name: `Before the reset ${dayClock(reset.at, now)}`, value: fmtPct(before) })
         for (const c of byChat) lines.push({ key: c.key, color: c.color, name: c.name, value: amount(c.usd), strong: c.strong })
         if (unknown) lines.push({ key: 'unknown', color: UNKNOWN_FILL, name: 'Unknown', value: `≈${fmtShare(unknown)}` })
       }
@@ -1418,8 +1443,8 @@ export const register: Register = on => {
         wk.pct === undefined
           ? `No reading since the weekly reset ${dayClock(wk.start, now)} yet.`
           : share === undefined
-            ? 'Rough until the estimate is ready: the reading moves in whole steps and counts other chats running at the same time.'
-            : firstAt !== undefined && firstAt < wk.start
+            ? `Rough until the estimate is ready: the reading moves in whole steps and counts other chats running at the same time.${reset ? ` Counted from the reset ${dayClock(reset.at, now)}, when ${fmtPct(before)} was still used.` : ''}`
+            : !reset && firstAt !== undefined && firstAt < wk.start
               ? `This week only: since the reset ${dayClock(wk.start, now)}.`
               : undefined
       weekly = (
@@ -1456,7 +1481,7 @@ export const register: Register = on => {
             <Box flexDirection="column">
               {rate === undefined ? (
                 <Text size="caption" dimColor>
-                  This week by chat, in API-equivalent dollars:
+                  {reset ? `Since the reset ${dayClock(reset.at, now)}` : 'This week'} by chat, in API-equivalent dollars:
                 </Text>
               ) : null}
               {lines.map(l => (

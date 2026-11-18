@@ -566,6 +566,19 @@ describe('the next message and plan limits', () => {
     assert.deepEqual(jitter.map(x => [x.delta, x.didReset]), [[1.5, false]])
   })
 
+  test('a reading that drops inside the same week is a reset there (a Fable reset, say); a stale step behind is not', () => {
+    const fable = limitDeltas(
+      [{ kind: 'seven_day', percentUsed: 96, resetsAt: '2026-11-23T01:00:00Z' }],
+      [{ kind: 'seven_day', percentUsed: 57, resetsAt: '2026-11-23T01:00:00Z' }],
+    )
+    assert.deepEqual(fable.map(x => [x.delta, x.didReset]), [[57, true]])
+    const stale = limitDeltas(
+      [{ kind: 'seven_day', percentUsed: 96, resetsAt: '2026-11-23T01:00:00Z' }],
+      [{ kind: 'seven_day', percentUsed: 95, resetsAt: '2026-11-23T01:00:00Z' }],
+    )
+    assert.deepEqual(stale.map(x => [x.delta, x.didReset]), [[-1, false]])
+  })
+
   test('limit deltas are per window, and a reset in between counts from the reset', () => {
     const d = limitDeltas(
       [{ kind: 'seven_day', percentUsed: 65, resetsAt: 'a' }, { kind: 'five_hour', percentUsed: 98, resetsAt: 'x' }],
@@ -916,6 +929,25 @@ describe('the weekly share estimate', () => {
       { id: 'b', usd: 5, from: T0 + 2 * MIN },
       { id: 'a', title: 'A', usd: 2, from: T0 + MIN },
     ])
+  })
+
+  test('a reset inside the week splits the calibration there, so it goes on learning, and says when it was and what was left', () => {
+    // One chat at $1 a minute, the reading a point up per $10 from 40%; 35 minutes in it drops
+    // 30 points (a Fable reset, say) and climbs again, with no idle hour between.
+    const drop = S + 35 * MIN
+    const end = S + 80 * MIN
+    const pct = (t: number) => (t < drop ? pctAt(t) : pctAt(t) - 30)
+    const chat: ChatLedger = { id: 'c', at: end, spend: steady(S, end, 1), seen: poll(1, S, end, pct)[0]! }
+    const cal = calibrate([chat], end + HOUR)
+    // 41% to 43% before ($20), 14% to 17% after ($30). Without the split, the steps after the
+    // drop would sit below values already seen that week, and none of them could count.
+    assert.equal(cal.points, 5)
+    assert.equal(cal.stretches, 2)
+    assert.ok(near(cal.pointsPerUsd, 0.1))
+    // First seen 15 s after the drop, at 13%.
+    assert.deepEqual(cal.reset, { at: drop + 15_000, pct: 13 })
+    // A reading only climbing has none.
+    assert.equal(calibrate([{ ...chat, seen: poll(1, S, end, pctAt)[0]! }], end + HOUR).reset, undefined)
   })
 
   test('the calibration keeps the newest reading any chat saw, for the pane to read the week from', () => {
