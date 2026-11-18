@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { OTHER_CHAT_FILLS, THIS_CHAT_FILL, UNKNOWN_FILL } from '../lib/chart.ts'
 import type { SeenRun, SpendSeries } from '../lib/weekly.ts'
 import { decodeEntry, encodeEntry, noteReading } from '../lib/weekly.ts'
 
@@ -448,6 +449,18 @@ test('the weekly share shows on the pane and under the answer, from what all fiv
     expect(await ui.find({ type: 'Text', text: /^≈1\.1%$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Unknown$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^≈39%$/ })).toBeDefined()
+    // A color each: this chat orange, the other four one apiece, Unknown gray.
+    const drawn = async (key: string) => JSON.stringify((await ui.find({ key }))?.children ?? [])
+    expect(await drawn('wk-own')).toContain(THIS_CHAT_FILL)
+    expect(await drawn('wk-unknown')).toContain(UNKNOWN_FILL)
+    const used = new Set<string>()
+    for (const id of OTHERS) {
+      const s = await drawn(`wk-ledger1:${id}`)
+      const c = OTHER_CHAT_FILLS.find(x => s.includes(x))
+      expect(c).toBeDefined()
+      used.add(c!)
+    }
+    expect(used.size).toBe(4)
     await ui.unmount()
   }
   // What the estimate is based on, and what makes it run high, are in the notes.

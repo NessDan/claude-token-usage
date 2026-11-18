@@ -36,14 +36,13 @@ import {
   isColdRow,
   meterSvg,
   miniChartSvg,
-  MORE_CHATS_FILL,
   NEUTRAL_COLOR,
   OTHER_CHAT_FILLS,
   sparkline,
   splitBarSvg,
   stackedMeterSvg,
+  THIS_CHAT_FILL,
   UNKNOWN_FILL,
-  USED_FILL,
   YOU_COLOR,
 } from '../lib/chart.ts'
 import { modelLabel, priceFor } from '../lib/pricing.ts'
@@ -1355,33 +1354,37 @@ export const register: Register = on => {
       const ownKey = await ledgerKey($)
       const sameWeek = !!calib?.week && Math.abs(calib.week.start - wk.start) <= 3_600_000
       const others = sameWeek ? calib!.week!.chats.filter(c => c.id !== ownKey && c.usd >= 0.005) : []
-      const named = others.length > 4 ? others.slice(0, 3) : others
-      const rest = others.slice(named.length)
+      // Up to four other chats by name (the biggest), else three and the rest together. Each
+      // named chat keeps one color all week: they go in the order they first spent this week,
+      // so a chat that grows past another doesn't take its color.
+      const named = (others.length > 4 ? others.slice(0, 3) : others).slice().sort((a, b) => (a.from ?? 0) - (b.from ?? 0) || b.usd - a.usd)
+      const rest = others.filter(c => !named.includes(c))
       const restUsd = rest.reduce((s, c) => s + c.usd, 0)
       // What the reading moved that no chat here accounts for (claude.ai, the phone, another
       // computer, a chat on an older meter); unknown itself when the other chats' week isn't at hand.
       const unknown =
         rate !== undefined && share !== undefined && wk.pct !== undefined && sameWeek ? Math.max(0, wk.pct - share - others.reduce((s, c) => s + c.usd * rate, 0)) : undefined
-      // The bar: by chat once the rate is ready, else the account's use alone.
-      const parts: MeterPart[] = []
-      if (rate !== undefined && share !== undefined) {
-        parts.push({ frac: share / 100, fill: CLAUDE_COLOR })
-        named.forEach((c, i) => parts.push({ frac: (c.usd * rate) / 100, fill: OTHER_CHAT_FILLS[i] ?? MORE_CHATS_FILL }))
-        if (rest.length) parts.push({ frac: (restUsd * rate) / 100, fill: MORE_CHATS_FILL })
-        if (unknown) parts.push({ frac: unknown / 100, fill: UNKNOWN_FILL, hatch: true })
-      } else if (wk.pct !== undefined) {
-        parts.push({ frac: wk.pct / 100, fill: USED_FILL })
-      }
-      // Its list: each chat's share (or, until the rate is ready, its dollars this week), in the bar's order.
-      const amount = (usd: number) => (rate === undefined ? fmtUsd(usd) : usd * rate > 0 ? fmtEstimate(usd * rate) : '0%')
-      // A chat on an older meter wrote no title: named by when it first spent this week.
+      // Each part, in the bar's order and the list's: this chat, the others, the rest together, Unknown.
       const chatName = (c: { title?: string; from?: number }) => c.title ?? (c.from ? `Another chat (from ${dayClock(c.from, now)})` : 'Another chat')
-      const lines: { key: string; glyph: string; color: string; name: string; value: string; strong?: boolean }[] = []
+      const byChat = [
+        { key: 'own', color: THIS_CHAT_FILL, name: 'This chat', usd: ownUsd, strong: true },
+        ...named.map((c, i) => ({ key: c.id, color: OTHER_CHAT_FILLS[i]!, name: chatName(c), usd: c.usd, strong: false })),
+        ...(rest.length ? [{ key: 'more', color: OTHER_CHAT_FILLS[3], name: `${rest.length} more chats`, usd: restUsd, strong: false }] : []),
+      ]
+      // The bar: by chat once the rate is ready; until then the account's use alone, in gray.
+      const parts: MeterPart[] = []
+      if (rate !== undefined) {
+        for (const c of byChat) parts.push({ frac: (c.usd * rate) / 100, fill: c.color })
+        if (unknown) parts.push({ frac: unknown / 100, fill: UNKNOWN_FILL })
+      } else if (wk.pct !== undefined) {
+        parts.push({ frac: wk.pct / 100, fill: UNKNOWN_FILL })
+      }
+      // Its list: each chat's share (or, until the rate is ready, its dollars this week), each in its color.
+      const amount = (usd: number) => (rate === undefined ? fmtUsd(usd) : usd * rate > 0 ? fmtEstimate(usd * rate) : '0%')
+      const lines: { key: string; color: string; name: string; value: string; strong?: boolean }[] = []
       if (others.length || unknown) {
-        lines.push({ key: 'own', glyph: '■', color: rate === undefined ? USED_FILL : CLAUDE_COLOR, name: 'This chat', value: amount(ownUsd), strong: true })
-        named.forEach((c, i) => lines.push({ key: c.id, glyph: '■', color: rate === undefined ? USED_FILL : (OTHER_CHAT_FILLS[i] ?? MORE_CHATS_FILL), name: chatName(c), value: amount(c.usd) }))
-        if (rest.length) lines.push({ key: 'more', glyph: '■', color: rate === undefined ? USED_FILL : MORE_CHATS_FILL, name: `${rest.length} more chats`, value: amount(restUsd) })
-        if (unknown) lines.push({ key: 'unknown', glyph: '▨', color: UNKNOWN_FILL, name: 'Unknown', value: `≈${fmtShare(unknown)}` })
+        for (const c of byChat) lines.push({ key: c.key, color: c.color, name: c.name, value: amount(c.usd), strong: c.strong })
+        if (unknown) lines.push({ key: 'unknown', color: UNKNOWN_FILL, name: 'Unknown', value: `≈${fmtShare(unknown)}` })
       }
       const head =
         share !== undefined
@@ -1447,7 +1450,7 @@ export const register: Register = on => {
                 <Box key={`wk-${l.key}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
                   <Box flexDirection="row" alignItems="center" gap="sm" flexShrink={1} minWidth={0}>
                     <Text size="caption" color={l.color}>
-                      {l.glyph}
+                      ■
                     </Text>
                     {l.strong ? (
                       <Text size="caption" wrap="truncate-end">

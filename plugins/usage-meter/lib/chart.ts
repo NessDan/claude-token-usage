@@ -64,16 +64,20 @@ export function meterSvg(fraction: number, width: number, height: number, fill: 
   return svgDoc(width, height, `<rect x="0" y="0" width="${px(width)}" height="${height}" rx="${r}" fill="${TRACK}"/>${filled}`)
 }
 
-/** The account's use of the weekly limit, as one gray. */
-export const USED_FILL = '#8a877f'
-/** The other chats in the weekly split, biggest first: grays that step down, then the chats past those. */
-export const OTHER_CHAT_FILLS = ['#b8b5ad', '#9a978f', '#7f7c75'] as const
-export const MORE_CHATS_FILL = '#68655f'
-/** Use the meter can't put a chat to (claude.ai, the phone, another computer): hatched. */
-export const UNKNOWN_FILL = '#9a978f'
+/**
+ * The weekly split's colors, one per chat: this chat, then the other chats in
+ * the order they first spent this week. They follow the dataviz reference
+ * palette's hues, skipping blue (your messages) and the status colors, and pass
+ * its checks against both the light and the dark surface; the bar's gaps and the
+ * list under it name each part too, as the checks ask of the closest pair.
+ */
+export const THIS_CHAT_FILL = '#e2602c'
+export const OTHER_CHAT_FILLS = ['#199e70', '#8578e6', '#d55181', '#3f9d3a'] as const
+/** Weekly use the meter can't put to a chat here, and the account's whole use before the split is ready: gray. */
+export const UNKNOWN_FILL = '#8a877f'
 
-/** One part of a stacked meter: its share of the whole (0 to 1), its fill, and whether it is hatched. */
-export type MeterPart = { frac: number; fill: string; hatch?: boolean }
+/** One part of a stacked meter: its share of the whole (0 to 1) and its fill. */
+export type MeterPart = { frac: number; fill: string }
 
 /**
  * A thin meter of the whole weekly limit: the faint rail is the limit, and from
@@ -92,14 +96,11 @@ export function stackedMeterSvg(parts: readonly MeterPart[], width: number, heig
     const avail = Math.max(0, w - gap * (shown.length - 1))
     const raw = shown.map(p => Math.max(2, (p.frac / total) * avail))
     const scale = avail / raw.reduce((s, x) => s + x, 0)
-    body.push(
-      `<defs><pattern id="h" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="2" height="4" fill="${UNKNOWN_FILL}"/></pattern>` +
-        `<clipPath id="c"><rect x="0" y="0" width="${px(w)}" height="${height}" rx="${r}"/></clipPath></defs><g clip-path="url(#c)">`,
-    )
+    body.push(`<clipPath id="c"><rect x="0" y="0" width="${px(w)}" height="${height}" rx="${r}"/></clipPath><g clip-path="url(#c)">`)
     let x = 0
     shown.forEach((p, i) => {
       const pw = raw[i]! * scale
-      body.push(`<rect x="${px(x)}" y="0" width="${px(pw)}" height="${height}" fill="${p.hatch ? 'url(#h)' : p.fill}"/>`)
+      body.push(`<rect x="${px(x)}" y="0" width="${px(pw)}" height="${height}" fill="${p.fill}"/>`)
       x += pw + gap
     })
     body.push('</g>')
