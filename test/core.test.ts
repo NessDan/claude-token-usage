@@ -143,6 +143,22 @@ describe('transcript parsing', () => {
     assert.deepEqual(t.exchanges.map(e => [e.origin, e.prompt]), [['task-notification', 'Workflow "Research" completed'], ['queued', 'also do this']])
   })
 
+  test('a reply made in the desktop app shows your own words, not the lines it quotes', () => {
+    const t = parseTranscript(lines(
+      prompt(T0, '<!-- reply 1 -->\n> Once there is enough data, the slot shows the estimate.\n\nLove this thank you\n\n\nHey, one more thing'),
+      reply(T0 + 1000, 'a', { read: 5000 }),
+      prompt(T0 + 2000, '<!-- reply -->\n> Does the arrow appear?'),
+      reply(T0 + 3000, 'b', { read: 5100 }),
+      prompt(T0 + 4000, '> a quote I typed myself\n\nand my answer'),
+      reply(T0 + 5000, 'c', { read: 5200 }),
+    ))
+    assert.deepEqual(t.exchanges.map(e => e.prompt.replace(/\s+/g, ' ').trim()), [
+      'Love this thank you Hey, one more thing',
+      'Does the arrow appear?',
+      '> a quote I typed myself and my answer',
+    ])
+  })
+
   test("the desktop app's notices read as what they are, not as messages you typed", () => {
     // The app writes them as plain user lines, with no origin of their own.
     const sessions = '<system-reminder>\nThe session "x" finished a turn.\n</system-reminder>\n<side-sessions-event>None of the sessions you started is working now.</side-sessions-event>'

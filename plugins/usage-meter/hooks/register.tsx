@@ -66,6 +66,10 @@ const SNAPSHOT_PATH: string = ''
 const ABOUT = 'usage-meter-about'
 /** Said whenever the band is hidden, so it can be found again. */
 const HIDE_HINT = 'Usage band hidden. Type /usage-meter show (or /usage-meter) to bring it back.'
+/** A faint wash for a lit column or row, readable on light and dark surfaces. */
+const LIT = 'rgba(137,135,129,0.16)'
+/** How long a message jumped to from the chart stays lit. */
+const FLASH_MS = 6_000
 
 const VIEW = atom({ plugin: 'usage-meter', key: 'view' } as const, null, { shape: 'view-1' })
 const LIVE = atom({ plugin: 'usage-meter', key: 'live' } as const, { exchanges: [], agentHome: {}, extras: [] }, { shape: 'live-2' })
@@ -1413,48 +1417,95 @@ export const register: Register = on => {
 
     // ------------------------------------------------ cost per message
     const shown = Math.min(40, view.rows.length)
-    // Brings a message's row to the top of the pane. A row's Box is the target;
-    // its Details button stands in should a Box key not be one.
+    // Brings a message's row to the top of the pane, then makes sure its Details
+    // button shows (`nearest` moves nothing when it already does), in case a
+    // Box's key is no target. Its column and row stay lit for a few seconds
+    // after, so a press that landed can be told from one that didn't.
     const jump = async (row: MeterRow): Promise<void> => {
-      let deny: string | undefined
-      try {
-        let r = await $.ui.scroll({ to: { key: row.id }, in: PANE, block: 'start' })
-        if (r.deny && row.origin !== 'background') r = await $.ui.scroll({ to: { key: `toggle-${row.id}` }, in: PANE, block: 'center' })
-        deny = r.deny
-      } catch (err) {
-        deny = (err as Error).message
+      const tryScroll = async (args: Parameters<typeof $.ui.scroll>[0]): Promise<string | undefined> => {
+        try {
+          return (await $.ui.scroll(args)).deny
+        } catch (err) {
+          return (err as Error).message
+        }
       }
-      // Said out loud, so a jump that does nothing can be told from a press that never arrived.
-      if (deny) {
-        dbg($, `jump to #${row.n}: ${deny}`)
-        $.ui.toast(`Couldn't scroll to message #${row.n}: ${deny}`, { timeoutMs: 6_000 })
+      try {
+        const box = await tryScroll({ to: { key: row.id }, in: PANE, block: 'start' })
+        const button = row.origin === 'background' ? box : await tryScroll({ to: { key: `toggle-${row.id}` }, in: PANE, block: 'nearest' })
+        dbg($, `jump to #${row.n}: row ${box ?? 'scrolled'}, details ${button ?? 'scrolled'}`)
+        if (box && button) $.ui.toast(`Couldn't scroll to message #${row.n}: ${box}`, { timeoutMs: 6_000 })
+      } finally {
+        await update($, UI, u => ({ ...u, flash: row.id }))
+        $.clock.after(FLASH_MS, () => {
+          void update($, UI, u => {
+            if (u.flash !== row.id) return u
+            const { flash: _, ...rest } = u
+            return rest
+          })
+        })
       }
     }
     let plot
+    let peek = null
     if (Svg && e.surface === 'desktop') {
-      // One Svg per message, each in a slot of its own: hovering a column lights
-      // it and shows a button with its number and cost that scrolls to it.
+      // One Svg per message, each in a column of its own that is its own hover
+      // target. Hovering lights the column, puts the message's number, cost and
+      // words beside the section's title, and shows ↓ under the bar: a button
+      // in the layout, since the pointer passes through an absolutely placed
+      // box to whatever is beneath it.
       const parts = chartSlots(view.rows, W, 92)
-      const half = parts.slots.length / 2
       plot = (
         <Box flexDirection="row" alignItems="flex-start">
           <Svg source={parts.axis} alt="Scale of the chart" width={parts.axisWidth} height={parts.height} />
-          {parts.slots.map((s, i) => (
-            <Box key={`bar-${s.row.id}`} hover={{ backgroundColor: 'rgba(137,135,129,0.14)' }}>
+          {parts.slots.map(s => (
+            <Box
+              key={`bar-${s.row.id}`}
+              flexDirection="column"
+              alignItems="center"
+              {...(ui.flash === s.row.id ? { backgroundColor: LIT } : {})}
+              hover={{ scope: `bar-${s.row.id}`, backgroundColor: LIT }}
+            >
               <Svg source={s.svg} alt={`#${s.row.n}: ${fmtUsd(s.row.total)}`} width={s.width} height={parts.height} />
-              <Box position="absolute" top={0} {...(i < half ? { left: 0 } : { right: 0 })} display="none" hover={{ display: 'flex' }}>
-                <Button key={`jump-${s.row.id}`} label={`#${s.row.n} · ${s.row.estimated ? '≈' : ''}${fmtUsd(s.row.total)} ↓`} onPress={() => void jump(s.row)} />
+              {/* A row kept for the button, so showing it moves nothing. */}
+              <Box height={1} flexDirection="row" justifyContent="center">
+                <Box display="none" hover={{ display: 'flex' }}>
+                  <Button key={`jump-${s.row.id}`} plain label="↓" onPress={() => void jump(s.row)} />
+                </Box>
               </Box>
             </Box>
           ))}
         </Box>
       )
+      peek = parts.slots.map(s => (
+        <Box key={`peek-${s.row.id}`} display="none" flexShrink={1} minWidth={0} hover={{ scope: `bar-${s.row.id}`, display: 'flex' }}>
+          <Text size="caption" wrap="truncate-end">
+            #{s.row.n} · {s.row.estimated ? '≈' : ''}
+            {fmtUsd(s.row.total)}
+            {isColdRow(s.row) ? ' · ▲' : ''} · {preview(s.row.prompt || '(no text)', 30)}
+          </Text>
+        </Box>
+      ))
     } else if (Svg) {
       plot = <Svg source={miniChartSvg(view.rows, W, 104)} alt={`Cost of the last ${shown} messages: your message and Claude's reply, stacked`} height={104} isInteractive />
     }
     const chart = plot ? (
       <Box key="chart" flexDirection="column" gap="xs">
-        {label('chart-label', 'Cost per message', `last ${shown}`)}
+        {/* One line, hovered or not: the title and the note keep their width, and the readout gives way. */}
+        <Box key="chart-label" flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" marginTop="lg">
+          <Box flexDirection="row" alignItems="center" gap="sm" flexShrink={1} minWidth={0}>
+            <Box flexShrink={0}>
+              <Text size="caption" weight="medium" dimColor wrap="truncate-end">
+                Cost per message
+              </Text>
+            </Box>
+            {peek}
+          </Box>
+          <Box flexShrink={0}>
+            <Text size="caption" dimColor wrap="truncate-end">
+              last {shown}
+            </Text>
+          </Box>
+        </Box>
         {plot}
         <Box flexDirection="row" gap="sm">
           <Text size="caption" color={YOU_COLOR}>
@@ -1488,7 +1539,7 @@ export const register: Register = on => {
     const rowNodes = rows.map(row => {
       if (row.origin === 'background') {
         return (
-          <Box key={row.id} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" marginTop="lg">
+          <Box key={row.id} flexDirection="row" justifyContent="space-between" alignItems="center" gap="md" marginTop="lg" {...(ui.flash === row.id ? { backgroundColor: LIT } : {})}>
             <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0}>
               <Text size="caption" dimColor wrap="truncate-end">
                 {clock(row.at)} · {row.prompt}
@@ -1508,7 +1559,7 @@ export const register: Register = on => {
       const cold = coldWords(row, ttl)
       const plan = limitWords(row)
       return (
-        <Box key={row.id} flexDirection="column" gap="xs" marginTop="lg">
+        <Box key={row.id} flexDirection="column" gap="xs" marginTop="lg" {...(ui.flash === row.id ? { backgroundColor: LIT } : {})}>
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="md">
             <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0}>
               <Text weight="medium" wrap="truncate-end">

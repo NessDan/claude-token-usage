@@ -113,15 +113,26 @@ test("a bar in the chart offers a button that scrolls the pane to its message", 
     await clock.advance(60_000)
   }
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // Each column is a hover target holding a button with its message's number and cost.
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Each column is a hover target with a ↓ under its bar, and its number, cost
+  // and words waiting beside the section's title.
   expect(await ui.find({ key: 'bar-t2' })).toBeDefined()
-  const chip = await ui.find({ key: 'jump-t1' })
-  expect(String(chip?.props.label)).toMatch(/^#1 · \$[\d.]+ ↓$/)
+  expect((await ui.find({ key: 'jump-t1' }))?.props.label).toBe('↓')
+  expect(await ui.find({ type: 'Text', text: /^#1 · \$[\d.]+ · message t1$/ })).toBeDefined()
   await ui.press({ key: 'jump-t1' })
   // The test kit has nothing that moves a pane, so the scroll the press asks
   // for is refused, and the meter says so rather than doing nothing.
   expect(toasts.some(t => /^Couldn't scroll to message #1: .*ui\.scroll/.test(t))).toBe(true)
+  await ui.unmount()
+  // The press landed: the column and the row stay lit for a few seconds.
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'bar-t1' }))?.props.backgroundColor).toBeDefined()
+  expect((await ui.find({ key: 't1' }))?.props.backgroundColor).toBeDefined()
+  expect((await ui.find({ key: 'bar-t2' }))?.props.backgroundColor).toBeUndefined()
+  await ui.unmount()
+  await clock.advance(7_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'bar-t1' }))?.props.backgroundColor).toBeUndefined()
   await ui.unmount()
 
   // The terminal draws a sparkline: no columns to press.

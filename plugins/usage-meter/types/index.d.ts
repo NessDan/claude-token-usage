@@ -217,6 +217,8 @@ export type MeterUi = {
   bandHidden: boolean
   /** No usage line beneath Claude's answers. */
   notesHidden: boolean
+  /** The message just jumped to from the chart, by row id: its column and row stay lit for a few seconds. */
+  flash?: string
 }
 
 declare module 'claude-code' {

@@ -131,9 +131,25 @@ export function cleanPrompt(text: string): string {
   }
   // Only the wrappers Claude Code itself injects come out; anything the person
   // typed that looks like markup (pasted HTML, code) stays as typed.
-  return text
-    .replace(/<(system-reminder|ide_selection|ide_opened_file|ide_diagnostics|local-command-caveat|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g, ' ')
-    .replace(/<\/?(command-message|command-name|command-args|user-prompt-submit-hook)>/g, ' ')
+  return ownWords(
+    text
+      .replace(/<(system-reminder|ide_selection|ide_opened_file|ide_diagnostics|local-command-caveat|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g, ' ')
+      .replace(/<\/?(command-message|command-name|command-args|user-prompt-submit-hook)>/g, ' '),
+  )
+}
+
+const REPLY_MARK = /<!--\s*reply\b[^>]*-->/g
+
+/**
+ * A reply made in the desktop app starts each part with `<!-- reply N -->` and
+ * the lines it answers, quoted (`> ...`): the person's own words are the rest.
+ * Only a message carrying that mark is touched; a quote alone is kept, unquoted.
+ */
+function ownWords(text: string): string {
+  if (!text.match(REPLY_MARK)) return text
+  const lines = text.replace(REPLY_MARK, '\n').split('\n')
+  const own = lines.filter(l => !/^\s*>/.test(l)).join('\n').trim()
+  return own || lines.map(l => l.replace(/^\s*>\s?/, '')).join('\n').trim()
 }
 
 function originOf(o: Line): string {
