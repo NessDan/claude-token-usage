@@ -9,7 +9,8 @@ Two pieces:
 - **A mod for Claude Code** (desktop app and terminal): a pane beside the chat with one row per message, a one-line band above the prompt, a usage line under each reply, and a `/usage-meter` command.
 - **A command-line report** over the conversations already on your computer, as a terminal table or an HTML page.
 
-<p align="center"><img src="docs/images/usage-pane.png" width="400" alt="The usage meter's pane in the Claude desktop app: this chat's total split into your messages and Claude's replies, what lapsed caches cost, this chat's share of the weekly limit beside the account's use, the cache countdown, a chart of each message's cost, and the newest message with what it cost"></p>
+<p align="center"><img src="docs/images/usage-pane.png" width="400" alt="The usage meter's pane in the Claude desktop app, showing sample data: this chat's total split into your messages and Claude's replies, what lapsed caches cost, the weekly limit split by chat with each chat's share in its own color and the unknown rest in gray, the cache countdown, and a chart of each message's cost"></p>
+<p align="center"><sub>Sample data, from <code>/usage-meter demo</code>.</sub></p>
 
 ## Install
 
